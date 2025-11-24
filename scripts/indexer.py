@@ -1,6 +1,6 @@
+import json
 from dataclasses import dataclass
 from uuid import uuid4
-import json
 
 import grain
 import toolz as tlz
@@ -22,12 +22,12 @@ class ScriptConfig:
 
 
 TEMPLATE_DOCUMENT = """Title: {title}
-    Date: {decision_date}
-    Juridiction: {juridiction}
-    Formation: {formation}
-    Content: {content}
-    Solution: {solution}
-    """
+Date: {decision_date}
+Jurisdiction: {juridiction}
+Formation: {formation}
+Solution: {solution}
+Decision Text: {content}
+"""
 
 
 def fix_colbert_embeddings(model):
