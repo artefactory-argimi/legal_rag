@@ -10,7 +10,7 @@ from scripts import indexer
 from scripts.tools import lookup_legal_doc, search_legal_docs_metadata
 
 # Defaults aligned with the design doc; adjust via function arguments as needed.
-DEFAULT_STUDENT_MODEL = "mistralai/Magistral-Small-2509"
+DEFAULT_GENERATOR_MODEL = "mistralai/Magistral-Small-2509"
 DEFAULT_ENCODER_MODEL = "maastrichtlawtech/colbert-legal-french"
 DEFAULT_INDEX_FOLDER = epath.Path("./index")
 DEFAULT_INDEX_NAME = "legal_french_index"
@@ -26,32 +26,36 @@ DEFAULT_INSTRUCTIONS = (
 
 class LMMode(str, Enum):
     HUGGINGFACE = "huggingface"
-    LOCAL_OPENAI = "local_openai"
+    LOCAL_SERVER = "local_server"
+
+
+def _resolve_mode(mode: str | None, api_base: str | None) -> LMMode:
+    """Infer LM mode: local when api_base is provided, otherwise Hugging Face."""
+    if mode:
+        return LMMode(mode)
+    return LMMode.LOCAL_SERVER if api_base else LMMode.HUGGINGFACE
 
 
 def build_language_model(
     *,
-    student_model: str = DEFAULT_STUDENT_MODEL,
-    mode: LMMode = LMMode.HUGGINGFACE,
+    student_model: str = DEFAULT_GENERATOR_MODEL,
+    mode: str | None = None,
     api_key: str | None = None,
     api_base: str | None = None,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
 ) -> dspy.LM:
-    """Instantiate the LM using the current dspy.LM API.
+    """Instantiate the generator LM using the current dspy.LM API.
 
     - Hugging Face Inference: mode="huggingface", student_model as the HF repo id,
       api_key is the HF token.
-      Example: dspy.LM("huggingface/mistralai/Magistral-Small-2509", api_key=...).
-    - Local OpenAI-compatible server (e.g., SGLang): mode="local_openai",
+    - Local OpenAI-compatible server (e.g., SGLang): mode="local_server",
       student_model as the model id exposed by the server, api_base points to it,
-      api_key any non-empty string, model_type="chat".
-      Example: dspy.LM("openai/meta-llama/Llama-3.1-8B-Instruct",
-                       api_base="http://localhost:7501/v1",
-                       api_key="local",
-                       model_type="chat").
+      api_key any string (can be empty), model_type="chat".
     """
-    if mode == LMMode.HUGGINGFACE:
+    resolved_mode = _resolve_mode(mode, api_base)
+
+    if resolved_mode == LMMode.HUGGINGFACE:
         if not api_key:
             raise ValueError("api_key (HF token) is required for Hugging Face inference.")
         lm_id = f"huggingface/{student_model}"
@@ -62,11 +66,9 @@ def build_language_model(
             temperature=temperature,
         )
 
-    if mode == LMMode.LOCAL_OPENAI:
+    if resolved_mode == LMMode.LOCAL_SERVER:
         if not api_base:
-            raise ValueError("api_base is required for local_openai mode.")
-        if not api_key:
-            raise ValueError("api_key is required for local_openai mode (use a dummy string if needed).")
+            raise ValueError("api_base is required for local_server mode.")
         lm_id = f"openai/{student_model}"
         return dspy.LM(
             lm_id,
@@ -77,19 +79,25 @@ def build_language_model(
             temperature=temperature,
         )
 
-    raise ValueError(f"Unsupported mode '{mode}'. Use LMMode.HUGGINGFACE or LMMode.LOCAL_OPENAI.")
+    raise ValueError(f"Unsupported mode '{mode}'. Use '{LMMode.HUGGINGFACE.value}' or '{LMMode.LOCAL_SERVER.value}'.")
 
 
 def build_retrieval(
     encoder_model: str = DEFAULT_ENCODER_MODEL,
+    encoder_api_key: str | None = None,
+    encoder_api_base: str | None = None,
     index_folder: epath.Path = DEFAULT_INDEX_FOLDER,
     index_name: str = DEFAULT_INDEX_NAME,
 ) -> tuple[models.ColBERT, retrieve.ColBERT]:
     """Load encoder and retriever from disk."""
-    encoder = models.ColBERT(
-        model_name_or_path=encoder_model,
-        document_length=496,
-    )
+    colbert_kwargs: dict = {"model_name_or_path": encoder_model, "document_length": 496}
+    # Allow remote encoder endpoints (e.g., HF Inference) if provided.
+    if encoder_api_key is not None:
+        colbert_kwargs["api_key"] = encoder_api_key
+    if encoder_api_base is not None:
+        colbert_kwargs["api_base"] = encoder_api_base
+
+    encoder = models.ColBERT(**colbert_kwargs)
     encoder = indexer.fix_colbert_embeddings(encoder)
 
     index = indexes.PLAID(
@@ -173,12 +181,16 @@ class LegalReActAgent(dspy.Module):
 
 
 def build_agent(
-    student_model: str = DEFAULT_STUDENT_MODEL,
+    student_model: str = DEFAULT_GENERATOR_MODEL,
     encoder_model: str = DEFAULT_ENCODER_MODEL,
+    encoder_api_key: str | None = None,
+    encoder_api_base: str | None = None,
+    generator_api_key: str | None = None,
+    generator_api_base: str | None = None,
     index_folder: epath.Path = DEFAULT_INDEX_FOLDER,
     index_name: str = DEFAULT_INDEX_NAME,
     search_k: int = DEFAULT_SEARCH_K,
-    mode: LMMode = LMMode.HUGGINGFACE,
+    mode: str | None = None,
     api_key: str | None = None,
     api_base: str | None = None,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
@@ -190,8 +202,8 @@ def build_agent(
     lm = build_language_model(
         student_model=student_model,
         mode=mode,
-        api_key=api_key,
-        api_base=api_base,
+        api_key=generator_api_key or api_key,
+        api_base=generator_api_base or api_base,
         max_new_tokens=max_new_tokens,
         temperature=temperature,
     )
@@ -199,6 +211,8 @@ def build_agent(
 
     encoder, retriever = build_retrieval(
         encoder_model=encoder_model,
+        encoder_api_key=encoder_api_key,
+        encoder_api_base=encoder_api_base,
         index_folder=index_folder,
         index_name=index_name,
     )
