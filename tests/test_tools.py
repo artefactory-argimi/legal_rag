@@ -6,8 +6,8 @@ from pathlib import Path
 from absl.testing import absltest
 from pylate import indexes, models, retrieve
 
-import indexer
-from tools import (
+from legal_rag import indexer
+from legal_rag.tools import (
     load_doc_mapping,
     lookup_legal_doc,
     search_legal_docs,

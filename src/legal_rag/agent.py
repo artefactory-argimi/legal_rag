@@ -6,8 +6,8 @@ import dspy
 from etils import epath
 from pylate import indexes, models, retrieve
 
-from scripts import indexer
-from scripts.tools import lookup_legal_doc, search_legal_docs_metadata
+from legal_rag.colbert_utils import fix_colbert_embeddings
+from legal_rag.tools import lookup_legal_doc, search_legal_docs_metadata
 
 # Defaults aligned with the design doc; adjust via function arguments as needed.
 DEFAULT_GENERATOR_MODEL = "mistralai/Magistral-Small-2509"
@@ -84,21 +84,25 @@ def build_language_model(
 
 def build_retrieval(
     encoder_model: str = DEFAULT_ENCODER_MODEL,
-    encoder_api_key: str | None = None,
-    encoder_api_base: str | None = None,
     index_folder: epath.Path = DEFAULT_INDEX_FOLDER,
     index_name: str = DEFAULT_INDEX_NAME,
 ) -> tuple[models.ColBERT, retrieve.ColBERT]:
     """Load encoder and retriever from disk."""
     colbert_kwargs: dict = {"model_name_or_path": encoder_model, "document_length": 496}
-    # Allow remote encoder endpoints (e.g., HF Inference) if provided.
-    if encoder_api_key is not None:
-        colbert_kwargs["api_key"] = encoder_api_key
-    if encoder_api_base is not None:
-        colbert_kwargs["api_base"] = encoder_api_base
+    # Prefer GPU for encoder if available (pylate uses torch under the hood).
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            colbert_kwargs["device"] = "cuda"
+        else:
+            colbert_kwargs["device"] = "cpu"
+    except Exception:
+        # If torch is absent or misconfigured, fall back to default device selection.
+        pass
 
     encoder = models.ColBERT(**colbert_kwargs)
-    encoder = indexer.fix_colbert_embeddings(encoder)
+    encoder = fix_colbert_embeddings(encoder)
 
     index = indexes.PLAID(
         index_folder,
@@ -183,8 +187,6 @@ class LegalReActAgent(dspy.Module):
 def build_agent(
     student_model: str = DEFAULT_GENERATOR_MODEL,
     encoder_model: str = DEFAULT_ENCODER_MODEL,
-    encoder_api_key: str | None = None,
-    encoder_api_base: str | None = None,
     generator_api_key: str | None = None,
     generator_api_base: str | None = None,
     index_folder: epath.Path = DEFAULT_INDEX_FOLDER,
@@ -211,8 +213,6 @@ def build_agent(
 
     encoder, retriever = build_retrieval(
         encoder_model=encoder_model,
-        encoder_api_key=encoder_api_key,
-        encoder_api_base=encoder_api_base,
         index_folder=index_folder,
         index_name=index_name,
     )
