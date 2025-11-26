@@ -38,6 +38,7 @@ An offline optimization process uses a teacher model to generate synthetic data 
 - Inference layer
   - Student model (agent): `mistralai/Magistral-Small-2509`, chosen for strong French-language reasoning in a manageable size.
   - Teacher model (optimizer): `openai/gpt-oss-120b`, used to generate high-quality synthetic data for agent training and optimization.
+  - Provider switching: DSPy (via LiteLLM) handles routing. Use `huggingface/<model>` with `HF_TOKEN` when no `api_base` is provided; set an OpenAI-compatible `api_base` to route to a local server. Default stays on the mistral student model; switching happens inside DSPy based solely on the presence of `api_base` and credentials.
 - Retrieval layer
   - Engine: RAGatouille, implementing the ColBERTv2 algorithm for dense retrieval.
   - Embedding model: `maastrichtlawtech/colbert-legal-french`, specialized for French legal terminology.
