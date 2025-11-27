@@ -1,6 +1,6 @@
 # French Legal Agentic RAG
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/artefactory-argimi/legal_rag/blob/main/demo.py)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/artefactory-argimi/legal_rag/blob/main/demo.ipynb)
 
 This project provides a specialized Retrieval-Augmented Generation (RAG) agent for answering complex questions about French law. It leverages a DSPy ReAct agent that can autonomously search a knowledge base of legal documents (the French Civil Code) to provide accurate, evidence-based answers.
 
@@ -40,7 +40,7 @@ The agent requires a pre-built ColBERT search index to function.
 2.  If the index is not found, a file upload prompt will appear.
 3.  Please upload your zipped index file (e.g., `legal_rag_index.zip`). The notebook will automatically unzip it to the correct location (`/content/index`).
 
-> **Note:** The process for building the index from raw legal texts is defined in `src/legal_rag/indexer.py` but is not part of the interactive demo, which focuses on inference.
+> **Note:** The process for building the index from raw legal texts is defined in `scripts/indexer.py` (backed by `legal_rag.indexer`) but is not part of the interactive demo, which focuses on inference.
 
 ### Step 3: Configure the LLM Provider
 

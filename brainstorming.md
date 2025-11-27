@@ -59,7 +59,7 @@ All Python source code resides in a dedicated folder on Google Drive (e.g., `/co
 - `config.py` (configuration)
   - Purpose: Single source of truth for all system settings.
   - Implementation: Uses `attrs` and `environ-config` to load configuration; auto-detects `HF_TOKEN` and the Google Drive path to configure `USE_REMOTE_API` and `INDEX_ROOT`; defines constants like `SEARCH_K`, model IDs, and paths.
-- `indexer.py` (offline corpus indexing)
+- `scripts/indexer.py` (offline corpus indexing)
   - Purpose: Builds the RAGatouille/ColBERT search index; run once or when the data source is updated.
   - Implementation: Checks for a pre-existing index on Google Drive and offers a fast track to unzip it if available; otherwise streams data via Google Grain and builds the index from scratch.
 - `tools.py` (agent retrieval tools)
@@ -87,7 +87,7 @@ Goal: A functioning interactive chatbot on Colab that can search the legal index
 
 - Tasks:
   1. Project setup: Create `config.py` with logic to detect Drive, `HF_TOKEN`, and define all paths and model IDs.
-  2. Indexing: Implement `indexer.py` with Google Grain for data loading and ColBERT for indexing; include logic to use a pre-built zipped index.
+  2. Indexing: Implement `scripts/indexer.py` with Google Grain for data loading and ColBERT for indexing; include logic to use a pre-built zipped index.
   3. Tooling: Implement `tools.py` with the singleton index loader and the `search_legal_docs` tool.
   4. Agent: Implement `agent.py` with a zero-shot `dspy.ReAct` module.
   5. Deployment: Create `main.ipynb` to mount Drive, launch the SGLang server if needed, and run the interactive chat.
