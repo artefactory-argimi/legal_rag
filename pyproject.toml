@@ -7,11 +7,15 @@ dependencies = [
     "datasets>=4.4.1",
     "dspy>=3.0.4",
     "etils[colab,eapp,ecolab,edc,epath,epy]>=1.13.0",
+    "flashinfer-cubin==0.5.0 ; sys_platform == 'linux'",
+    "flashinfer-jit-cache==0.5.0 ; sys_platform == 'linux'",
+    "flashinfer-python==0.5.0 ; sys_platform == 'linux'",
     "grain>=0.2.14",
     "huggingface-hub>=0.36.0",
     "jinja2>=3.1.6",
     "pydrive2>=1.21.3",
     "pylate>=1.3.4",
+    "sglang[all]>=0.3.6.post2 ; sys_platform == 'linux'",
     "tokenizers>=0.22.1",
     "toolz>=1.1.0",
 ]
@@ -26,10 +30,19 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[[tool.uv.index]]
+url = "https://flashinfer.ai/whl/cu128"
+
 [dependency-groups]
 dev = [
     "jupyter>=1.1.1",
     "pdbp>=1.8.1",
     "pre-commit>=4.5.0",
     "ruff>=0.14.6",
+]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
