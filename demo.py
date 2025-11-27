@@ -23,6 +23,7 @@ auto-switches providers based on whether an API base is provided.
 """
 
 # %%
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -31,12 +32,8 @@ from typing import Iterable
 from etils import epath
 
 """Detect Colab early; avoid hard imports elsewhere."""
-try:
-    import google.colab  # noqa: ignore
-
-    IN_COLAB = True
-except Exception:
-    IN_COLAB = False
+COLAB_NOTEBOOK_ID = os.environ.get("COLAB_NOTEBOOK_ID", None)
+IN_COLAB = COLAB_NOTEBOOK_ID is not None
 
 # %% [markdown]
 """
