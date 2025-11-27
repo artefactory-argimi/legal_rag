@@ -51,7 +51,7 @@ these form values. Set `GENERATOR_API_KEY` to your own HF token, or point
 # %%
 GENERATOR_API_KEY = ""  # @param {type:"string"}
 GENERATOR_API_BASE = ""  # @param {type:"string"}
-GENERATOR_MODEL_ID = "mistralai/Magistral-Small-2509"  # @param {type:"string"}
+GENERATOR_MODEL_ID = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param {type:"string"}
 ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"  # @param {type:"string"}
 SEARCH_K = 5  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
