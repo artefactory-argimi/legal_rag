@@ -33,6 +33,7 @@ from etils import epath
 """Detect Colab early; avoid hard imports elsewhere."""
 try:
     import google.colab  # noqa: ignore
+
     IN_COLAB = True
 except Exception:
     IN_COLAB = False
@@ -88,7 +89,15 @@ if IN_COLAB:
         import subprocess
 
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--quiet", f"git+{REPO_URL}"],
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--quiet",
+                "--upgrade",
+                f"git+{REPO_URL}",
+            ],
             check=True,
         )
 
