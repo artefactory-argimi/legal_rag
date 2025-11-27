@@ -10,6 +10,14 @@ from pylate import indexes, models
 
 from legal_rag.colbert_utils import fix_colbert_embeddings
 
+__all__ = [
+    "ScriptConfig",
+    "TEMPLATE_DOCUMENT",
+    "preprocess",
+    "build_index",
+    "fix_colbert_embeddings",
+]
+
 
 @dataclass(frozen=True)
 class ScriptConfig:
@@ -53,7 +61,7 @@ def preprocess(sample):
     }
 
 
-def main(cfg: ScriptConfig):
+def build_index(cfg: ScriptConfig):
     hf_ds = load_dataset(cfg.dataset, cfg.subset, split=cfg.split)
     ds = (
         grain.MapDataset.source(hf_ds)
@@ -87,9 +95,5 @@ def main(cfg: ScriptConfig):
     print(f"✓ Document mapping saved to {mapping_file}")
 
 
-if __name__ == "__main__":
-    from absl import app
-    from etils import eapp
-
-    eapp.better_logging()
-    app.run(main, flags_parser=eapp.make_flags_parser(ScriptConfig))
+# Keep the historical entry point name for compatibility.
+main = build_index

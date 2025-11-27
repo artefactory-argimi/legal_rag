@@ -60,46 +60,36 @@ MAX_ITERS = 4  # @param {type:"integer"}
 INSTRUCTIONS = "First call search_legal_docs to find candidate ids and previews. Then call lookup_legal_doc on specific ids you want to read in full. Ground your answer in the retrieved text and cite the document ids you used."  # @param {type:"string"}
 INDEX_PATH = "/content/index" if IN_COLAB else "./index"  # @param {type:"string"}
 configured_index = epath.Path(INDEX_PATH)
-index_zip_path = ""  # @param {type:"string"}
-
-try:
-    REPO_ROOT = Path(__file__).resolve().parent
-except NameError:
-    REPO_ROOT = Path(".").resolve()
-SRC_PATH = REPO_ROOT / "src"
-if SRC_PATH.exists():
-    sys.path.insert(0, str(SRC_PATH))
 
 # %% [markdown]
 """
-## Repo setup (Colab)
+## Repo setup
 
-When opened directly from GitHub, only this notebook is present in Colab. The
-cell below installs the full repo so that `agent.py` and utilities are
-importable. Skip installation if running locally.
+When opened directly from GitHub, this notebook installs the full repo so that
+`agent.py` and utilities are importable. If the package is already installed,
+the cell is a no-op.
 """
 
 # %%
 REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
 
-if IN_COLAB:
-    try:
-        import legal_rag as _  # noqa: F401
-    except ImportError:
-        import subprocess
+try:
+    import legal_rag as _  # noqa: F401
+except ImportError:
+    import subprocess
 
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--quiet",
-                "--upgrade",
-                f"git+{REPO_URL}",
-            ],
-            check=True,
-        )
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--upgrade",
+            f"git+{REPO_URL}",
+        ],
+        check=True,
+    )
 
 # %% [markdown]
 """
@@ -119,73 +109,38 @@ if not GENERATOR_API_BASE and not GENERATOR_API_KEY:
 
 # %% [markdown]
 """
-## Upload helper (Colab)
-
-If you need to upload a local file (e.g., a zipped index) from your machine into
-the Colab environment, uncomment and run the cell below. Uploaded filenames and
-sizes will be printed.
-"""
-
-# %%
-# if IN_COLAB:
-#     from google.colab import files  # type: ignore
-#     uploaded = files.upload()
-#     for fn, data in uploaded.items():
-#         print(f'User uploaded file "{fn}" with length {len(data)} bytes')
-#     # Auto-handle zip index uploads: save to /content, set index_zip_path, and unzip.
-#     for fn in uploaded:
-#         local_path = f"/content/{fn}"
-#         index_zip_path = local_path
-#         if fn.lower().endswith(".zip"):
-#             import zipfile
-#             with zipfile.ZipFile(local_path, "r") as zf:
-#                 zf.extractall("/content")
-#             print(f"✓ Extracted {fn} to /content")
-#         else:
-#             print("Uploaded file is not a zip; please upload a zipped index.")
-
-# %% [markdown]
-"""
 ## Index loading
 We use a single configured path for the index. No duplicated paths between local and Colab.
 
-If the index folder is missing, you can upload a zipped archive (e.g.
-`legal_rag_index.zip`) and set `index_zip_path` to its path; the cell below will
-unzip it into `INDEX_PATH`.
+If the index folder is missing, you must upload a zipped archive (e.g.
+`legal_rag_index.zip`); the upload flow will unpack it into `INDEX_PATH`.
 """
 
 # %%
 if not configured_index.exists():
-    # If an archive path is provided, try to use it.
-    if index_zip_path:
-        archive = epath.Path(index_zip_path)
-        if not archive.exists():
-            raise FileNotFoundError(f"Index archive not found: {archive}")
-    elif IN_COLAB:
-        # Prompt for upload when running in Colab and no archive path is given.
-        from google.colab import files  # type: ignore
-
-        uploaded = files.upload()
-        if not uploaded:
-            raise FileNotFoundError("No index found and no archive uploaded.")
-        # Pick the first uploaded file.
-        fn, data = next(iter(uploaded.items()))
-        local_path = f"/content/{fn}"
-        index_zip_path = local_path
-        print(f'User uploaded file "{fn}" with length {len(data)} bytes')
-    else:
+    if not IN_COLAB:
         raise FileNotFoundError(
-            "No index found. Provide an index at the configured path or upload a zipped archive."
+            "No index found. Run indexing locally or upload a zipped index in Colab."
         )
 
-    archive = epath.Path(index_zip_path)
+    from google.colab import files  # type: ignore
+
+    uploaded = files.upload()
+    if not uploaded:
+        raise FileNotFoundError("No index found and no archive uploaded.")
+    # Pick the first uploaded file.
+    fn, data = next(iter(uploaded.items()))
+    local_path = f"/content/{fn}"
+    print(f'User uploaded file "{fn}" with length {len(data)} bytes')
+
+    archive = epath.Path(local_path)
     if not archive.name.lower().endswith(".zip"):
-        raise ValueError(f"Uploaded/provided file is not a zip archive: {archive}")
+        raise ValueError(f"Uploaded file is not a zip archive: {archive}")
 
     with zipfile.ZipFile(archive, "r") as zf:
-        zf.extractall("/content" if IN_COLAB else str(configured_index.parent))
+        zf.extractall("/content")
 
-    if not configured_index.exists() and IN_COLAB:
+    if not configured_index.exists():
         # If the archive contained a folder with a different name, try to locate it.
         for child in epath.Path("/content").iterdir():
             if child.is_dir() and (child / "doc_mapping.json").exists():
