@@ -8,7 +8,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.17.1
 # ---
 
 # %% [markdown]
@@ -109,7 +109,8 @@ if not GENERATOR_API_BASE and not GENERATOR_API_KEY:
 """
 ## Index loading
 You must upload a zipped archive of the index (e.g. `legal_rag_index.zip`) each
-run; the upload flow will unpack it under `/content`.
+run; the upload flow will unpack it in the current working directory (expecting
+an `index/` folder inside).
 """
 
 # %%
@@ -125,14 +126,17 @@ if not uploaded:
     raise FileNotFoundError("No index uploaded.")
 # Pick the first uploaded file.
 fn, data = next(iter(uploaded.items()))
-local_path = f"/content/{fn}"
+local_path = Path(f"./{fn}")
 print(f'User uploaded file "{fn}" with length {len(data)} bytes')
+
+# Persist uploaded bytes to disk before extracting.
+local_path.write_bytes(data)
 
 archive = epath.Path(local_path)
 if not archive.name.lower().endswith(".zip"):
     raise ValueError(f"Uploaded file is not a zip archive: {archive}")
 
-content_root = epath.Path("/content")
+content_root = Path(".").resolve()
 with zipfile.ZipFile(archive, "r") as zf:
     zf.extractall(str(content_root))
 
