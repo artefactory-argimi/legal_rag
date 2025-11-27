@@ -24,17 +24,15 @@ auto-switches providers based on whether an API base is provided.
 
 # %%
 import sys
+import zipfile
 from pathlib import Path
 from typing import Iterable
-import zipfile
-import sys
 
 from etils import epath
 
 """Detect Colab early; avoid hard imports elsewhere."""
 try:
-    import google.colab  # type: ignore
-
+    import google.colab  # noqa: ignore
     IN_COLAB = True
 except Exception:
     IN_COLAB = False
@@ -59,9 +57,7 @@ MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
 MAX_ITERS = 4  # @param {type:"integer"}
 INSTRUCTIONS = "First call search_legal_docs to find candidate ids and previews. Then call lookup_legal_doc on specific ids you want to read in full. Ground your answer in the retrieved text and cite the document ids you used."  # @param {type:"string"}
-INDEX_PATH = (
-    "/content/index" if IN_COLAB else "./index"
-)  # @param {type:"string"}
+INDEX_PATH = "/content/index" if IN_COLAB else "./index"  # @param {type:"string"}
 configured_index = epath.Path(INDEX_PATH)
 index_zip_path = ""  # @param {type:"string"}
 
@@ -159,6 +155,7 @@ if not configured_index.exists():
     elif IN_COLAB:
         # Prompt for upload when running in Colab and no archive path is given.
         from google.colab import files  # type: ignore
+
         uploaded = files.upload()
         if not uploaded:
             raise FileNotFoundError("No index found and no archive uploaded.")
@@ -216,7 +213,6 @@ agent = build_agent(
     encoder_model=ENCODER_MODEL_ID,
     generator_api_key=generator_api_key,
     generator_api_base=generator_api_base,
-    mode=None,  # DSPy decides: Hugging Face when no api_base, local server when api_base is set.
     index_folder=configured_index,  # used by ColBERT retriever in agent.py
     search_k=SEARCH_K,
     max_new_tokens=MAX_NEW_TOKENS,

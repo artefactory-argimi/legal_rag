@@ -40,6 +40,7 @@ def fix_colbert_embeddings(model):
         assert query_id < new_size, f"Query ID {query_id} still out of bounds!"
         assert doc_id < new_size, f"Document ID {doc_id} still out of bounds!"
         print("✓ All token IDs are now valid")
-    else:\n+        print("✓ Embedding size is already sufficient")
+    else:
+        print("✓ Embedding size is already sufficient")
 
     return model

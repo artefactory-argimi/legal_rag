@@ -1,7 +1,5 @@
 """DSPy-based ReAct agent wiring for the Legal RAG demo (new dspy API)."""
 
-from enum import Enum
-
 import dspy
 from etils import epath
 from pylate import indexes, models, retrieve
@@ -24,22 +22,9 @@ DEFAULT_INSTRUCTIONS = (
 )
 
 
-class LMMode(str, Enum):
-    HUGGINGFACE = "huggingface"
-    LOCAL_SERVER = "local_server"
-
-
-def _resolve_mode(mode: str | None, api_base: str | None) -> LMMode:
-    """Infer LM mode: local when api_base is provided, otherwise Hugging Face."""
-    if mode:
-        return LMMode(mode)
-    return LMMode.LOCAL_SERVER if api_base else LMMode.HUGGINGFACE
-
-
 def build_language_model(
     *,
     student_model: str = DEFAULT_GENERATOR_MODEL,
-    mode: str | None = None,
     api_key: str | None = None,
     api_base: str | None = None,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
@@ -47,28 +32,12 @@ def build_language_model(
 ) -> dspy.LM:
     """Instantiate the generator LM using the current dspy.LM API.
 
-    - Hugging Face Inference: mode="huggingface", student_model as the HF repo id,
-      api_key is the HF token.
-    - Local OpenAI-compatible server (e.g., SGLang): mode="local_server",
-      student_model as the model id exposed by the server, api_base points to it,
-      api_key any string (can be empty), model_type="chat".
+    - Hugging Face Inference (default): student_model as the HF repo id,
+      api_key is the HF token. Used when api_base is not provided.
+    - Local OpenAI-compatible server (e.g., SGLang): student_model as the model id
+      exposed by the server, api_base points to it, api_key optional, model_type="chat".
     """
-    resolved_mode = _resolve_mode(mode, api_base)
-
-    if resolved_mode == LMMode.HUGGINGFACE:
-        if not api_key:
-            raise ValueError("api_key (HF token) is required for Hugging Face inference.")
-        lm_id = f"huggingface/{student_model}"
-        return dspy.LM(
-            lm_id,
-            api_key=api_key,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-        )
-
-    if resolved_mode == LMMode.LOCAL_SERVER:
-        if not api_base:
-            raise ValueError("api_base is required for local_server mode.")
+    if api_base:
         lm_id = f"openai/{student_model}"
         return dspy.LM(
             lm_id,
@@ -79,7 +48,15 @@ def build_language_model(
             temperature=temperature,
         )
 
-    raise ValueError(f"Unsupported mode '{mode}'. Use '{LMMode.HUGGINGFACE.value}' or '{LMMode.LOCAL_SERVER.value}'.")
+    if not api_key:
+        raise ValueError("api_key (HF token) is required for Hugging Face inference.")
+    lm_id = f"huggingface/{student_model}"
+    return dspy.LM(
+        lm_id,
+        api_key=api_key,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+    )
 
 
 def build_retrieval(
@@ -203,7 +180,6 @@ def build_agent(
     """Factory that wires LM, retrieval, and ReAct agent."""
     lm = build_language_model(
         student_model=student_model,
-        mode=mode,
         api_key=generator_api_key or api_key,
         api_base=generator_api_base or api_base,
         max_new_tokens=max_new_tokens,
