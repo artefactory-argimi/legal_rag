@@ -1,4 +1,3 @@
-import json
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -86,13 +85,6 @@ def build_index(cfg: ScriptConfig):
         documents_ids=doc_ids, documents_embeddings=documents_embeddings
     )
     print(f"\n✓ Index created successfully at {cfg.index_folder}")
-
-    # Save doc_id -> document text mapping
-    mapping_file = cfg.index_folder / "doc_mapping.json"
-    doc_mapping = {doc_id: doc for doc_id, doc in zip(doc_ids, documents)}
-    with mapping_file.open("w", encoding="utf-8") as f:
-        json.dump(doc_mapping, f, ensure_ascii=False, indent=2)
-    print(f"✓ Document mapping saved to {mapping_file}")
 
 
 # Keep the historical entry point name for compatibility.

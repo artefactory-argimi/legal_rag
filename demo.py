@@ -51,15 +51,16 @@ these form values. Set `GENERATOR_API_KEY` to your own HF token, or point
 # %%
 GENERATOR_API_KEY = ""  # @param {type:"string"}
 GENERATOR_API_BASE = ""  # @param {type:"string"}
-GENERATOR_MODEL_ID = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param {type:"string"}
+GENERATOR_MODEL_ID = (
+    "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param {type:"string"}
+)
 ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"  # @param {type:"string"}
 SEARCH_K = 5  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
 MAX_ITERS = 4  # @param {type:"integer"}
 INSTRUCTIONS = "First call search_legal_docs to find candidate ids and previews. Then call lookup_legal_doc on specific ids you want to read in full. Ground your answer in the retrieved text and cite the document ids you used."  # @param {type:"string"}
-INDEX_PATH = "/content/index" if IN_COLAB else "./index"  # @param {type:"string"}
-configured_index = epath.Path(INDEX_PATH)
+configured_index = None
 
 # %% [markdown]
 """
@@ -110,47 +111,51 @@ if not GENERATOR_API_BASE and not GENERATOR_API_KEY:
 # %% [markdown]
 """
 ## Index loading
-We use a single configured path for the index. No duplicated paths between local and Colab.
-
-If the index folder is missing, you must upload a zipped archive (e.g.
-`legal_rag_index.zip`); the upload flow will unpack it into `INDEX_PATH`.
+You must upload a zipped archive of the index (e.g. `legal_rag_index.zip`) each
+run; the upload flow will unpack it under `/content`.
 """
 
 # %%
-if not configured_index.exists():
-    if not IN_COLAB:
-        raise FileNotFoundError(
-            "No index found. Run indexing locally or upload a zipped index in Colab."
-        )
+if not IN_COLAB:
+    raise FileNotFoundError(
+        "Index upload is only supported in Colab. Build/run locally with an existing index."
+    )
 
-    from google.colab import files  # type: ignore
+from google.colab import files  # type: ignore
 
-    uploaded = files.upload()
-    if not uploaded:
-        raise FileNotFoundError("No index found and no archive uploaded.")
-    # Pick the first uploaded file.
-    fn, data = next(iter(uploaded.items()))
-    local_path = f"/content/{fn}"
-    print(f'User uploaded file "{fn}" with length {len(data)} bytes')
+uploaded = files.upload()
+if not uploaded:
+    raise FileNotFoundError("No index uploaded.")
+# Pick the first uploaded file.
+fn, data = next(iter(uploaded.items()))
+local_path = f"/content/{fn}"
+print(f'User uploaded file "{fn}" with length {len(data)} bytes')
 
-    archive = epath.Path(local_path)
-    if not archive.name.lower().endswith(".zip"):
-        raise ValueError(f"Uploaded file is not a zip archive: {archive}")
+archive = epath.Path(local_path)
+if not archive.name.lower().endswith(".zip"):
+    raise ValueError(f"Uploaded file is not a zip archive: {archive}")
 
-    with zipfile.ZipFile(archive, "r") as zf:
-        zf.extractall("/content")
+content_root = epath.Path("/content")
+with zipfile.ZipFile(archive, "r") as zf:
+    zf.extractall(str(content_root))
 
-    if not configured_index.exists():
-        # If the archive contained a folder with a different name, try to locate it.
-        for child in epath.Path("/content").iterdir():
-            if child.is_dir() and (child / "doc_mapping.json").exists():
-                configured_index = child
-                break
-    if not configured_index.exists():
-        raise FileNotFoundError(
-            f"Archive extracted but index folder missing at {configured_index}"
-        )
-    print(f"✓ Index extracted to {configured_index}")
+# The archive built by scripts/indexer.py should contain an `index/` directory.
+candidate = content_root / "index"
+if not candidate.exists():
+    # Fall back to a directory matching the archive stem, or a single extracted dir.
+    stem_dir = content_root / archive.stem
+    if stem_dir.exists():
+        candidate = stem_dir
+    else:
+        dirs = [p for p in content_root.iterdir() if p.is_dir()]
+        if len(dirs) == 1:
+            candidate = dirs[0]
+
+if not candidate.exists():
+    raise FileNotFoundError("Archive extracted but index folder not found.")
+
+configured_index = candidate
+print(f"✓ Index extracted to {configured_index}")
 
 # %% [markdown]
 """

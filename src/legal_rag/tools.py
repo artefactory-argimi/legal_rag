@@ -27,6 +27,8 @@ def load_doc_mapping(index_folder: str) -> dict[str, str]:
         Dictionary mapping document IDs to their full text content
     """
     mapping_file = epath.Path(index_folder) / "doc_mapping.json"
+    if not mapping_file.exists():
+        return {}
     with mapping_file.open("r", encoding="utf-8") as f:
         return json.load(f)
 
