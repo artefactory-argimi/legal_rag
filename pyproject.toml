@@ -48,3 +48,6 @@ required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+
+[tool.ruff]
+extend-exclude = ["demo.ipynb"]

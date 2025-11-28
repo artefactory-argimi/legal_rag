@@ -50,7 +50,7 @@ GENERATOR_MODEL_ID = (
 )
 # Encoder zip (URL/path) and extracted path must match the model used for indexing.
 ENCODER_ZIP_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/colbert-encoder.zip"  # @param {type:"string"}
-ENCODER_MODEL_PATH = "./encoder_model"  # path where the encoder zip will be extracted
+ENCODER_MODEL_PATH = "./encoder_model"  # path where the encoder zip will be extracted (model files at root)
 # Index zip (URL/path) built offline from the same encoder.
 INDEX_ZIP_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"  # @param {type:"string"}
 SEARCH_K = 5  # @param {type:"integer"}
@@ -79,6 +79,7 @@ Provide zipped assets (local path or URL, e.g., GitHub release assets). The
 encoder zip must contain the ColBERT checkpoint used for indexing. The index zip
 must contain the PLAID index (e.g., an `index/` folder).
 """
+
 
 # %%
 def _fetch_zip(uri: str, dest: Path) -> Path:
@@ -119,22 +120,18 @@ def _extract_zip(zip_path: Path, target_dir: Path) -> Path:
 
 def prepare_assets() -> tuple[str, Path]:
     # Fetch and extract encoder.
-encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
-encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_PATH))
-encoder_path = str(encoder_dir.resolve())
-# If the archive contained a single subfolder, descend into it to reach the actual model files.
-if not (encoder_dir / "config.json").exists():
-    subdirs = [p for p in encoder_dir.iterdir() if p.is_dir()]
-    if len(subdirs) == 1:
-        encoder_dir = subdirs[0]
-        encoder_path = str(encoder_dir.resolve())
-print(f"✓ Encoder extracted to {encoder_path}")
+    encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
+    encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_PATH))
+    # Model files are expected at the root (no extra subfolder).
+    encoder_path = str(encoder_dir.resolve())
+    print(f"✓ Encoder extracted to {encoder_path}")
 
     # Fetch and extract index.
     index_zip = _fetch_zip(INDEX_ZIP_URI, Path("./index.zip"))
     index_dir = _extract_zip(index_zip, Path("./index"))
     print(f"✓ Index extracted to {index_dir}")
     return encoder_path, index_dir
+
 
 # Run asset prep early so downstream cells only depend on local paths.
 encoder_path, configured_index = prepare_assets()

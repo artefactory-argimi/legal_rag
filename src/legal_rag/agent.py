@@ -67,7 +67,9 @@ def build_retrieval(
     """Load encoder and retriever from disk."""
     # Prefer a local path when provided (e.g., downloaded zip extraction in the demo).
     model_path = epath.Path(encoder_model)
-    has_modules = (model_path / "modules.json").exists()
+    has_modules = (model_path / "modules.json").exists() or (
+        model_path / "config_sentence_transformers.json"
+    ).exists()
     colbert_kwargs: dict = {
         "model_name_or_path": encoder_model,
         "document_length": 496,
@@ -75,6 +77,8 @@ def build_retrieval(
         # when pointing at an extracted snapshot to avoid network fallback.
         "has_modules": has_modules,
         "local_files_only": True if model_path.exists() else False,
+        # Ensure slow tokenizer usage to avoid fast conversion errors for SentencePiece.
+        "tokenizer_kwargs": {"use_fast": False},
     }
     # Prefer GPU for encoder if available (pylate uses torch under the hood).
     try:
