@@ -53,7 +53,8 @@ GENERATOR_API_BASE = (
 GENERATOR_MODEL_ID = (
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param {type:"string"}
 )
-ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"  # @param {type:"string"}
+# Encoder model used for queries; must match the model used when building the index.
+ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"
 SEARCH_K = 5  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
@@ -106,6 +107,9 @@ if not GENERATOR_API_BASE and not GENERATOR_API_KEY:
     # Default to HF serverless; prompt for token once if none was supplied.
     interpreter_login()
     GENERATOR_API_KEY = get_token() or ""
+
+# Increase HF download timeout to reduce transient failures when fetching models.
+os.environ.setdefault("HF_HUB_TIMEOUT", "60")
 
 # %% [markdown]
 """
@@ -162,6 +166,11 @@ print(f"✓ Index extracted to {configured_index}")
 
 # %% [markdown]
 """
+## Encoder ↔ Index coupling
+The encoder loaded here must be the same model (or local snapshot path) used when
+building the index. If you indexed with a different ColBERT checkpoint, update
+`ENCODER_MODEL_ID` accordingly to avoid mismatched embeddings.
+
 ## Agent configuration
 We build the DSPy ReAct agent using the helpers in `agent.py`.
 
