@@ -1,36 +1,39 @@
 from pathlib import Path
 import tempfile
 import zipfile
-from urllib.request import urlretrieve
+from urllib.error import URLError
 
 from absl.testing import absltest
 
 from legal_rag.agent import build_retrieval
+from legal_rag.assets import prepare_assets
 
 
 ENCODER_ZIP_URL = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/colbert-encoder.zip"
 INDEX_ZIP_URL = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"
 
 
-def _fetch_and_extract(url: str, dest: Path) -> Path:
-    dest.mkdir(parents=True, exist_ok=True)
-    local_zip = dest / Path(url).name
-    urlretrieve(url, local_zip)
-    with zipfile.ZipFile(local_zip, "r") as zf:
-        zf.extractall(dest)
-    # Prefer a directory that has a config; otherwise return dest.
-    for cand in [dest] + [p for p in dest.iterdir() if p.is_dir()]:
-        if (cand / "config.json").exists() or (cand / "config_sentence_transformers.json").exists():
-            return cand
-    return dest
-
-
 class EncoderLoadTest(absltest.TestCase):
     def test_encoder_and_index_load_and_encode(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            encoder_dir = _fetch_and_extract(ENCODER_ZIP_URL, tmp_path / "encoder")
-            index_dir = _fetch_and_extract(INDEX_ZIP_URL, tmp_path / "index")
+            try:
+                encoder_path_str, index_dir = prepare_assets(
+                    encoder_zip_uri=ENCODER_ZIP_URL,
+                    index_zip_uri=INDEX_ZIP_URL,
+                    encoder_dest=tmp_path / "encoder",
+                    index_dest=tmp_path / "index",
+                )
+                encoder_dir = Path(encoder_path_str)
+            except URLError:
+                self.skipTest("Network unavailable to download assets")
+
+            self.assertTrue(
+                (encoder_dir / "config.json").exists() or (encoder_dir / "config_sentence_transformers.json").exists(),
+                "Encoder config not found after download",
+            )
+            self.assertTrue(index_dir.exists(), "Index directory missing after download")
+            self.assertTrue(any(index_dir.iterdir()), "Index directory is empty")
 
             encoder, retriever = build_retrieval(
                 encoder_model=str(encoder_dir),

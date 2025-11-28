@@ -22,16 +22,6 @@ OpenAI-compatible server (provide `GENERATOR_API_BASE`). DSPy (via LiteLLM)
 auto-switches providers based on whether an API base is provided.
 """
 
-# %%
-import os
-import sys
-import zipfile
-from pathlib import Path
-from typing import Iterable
-from urllib.request import urlretrieve
-
-from etils import epath
-
 # %% [markdown]
 """
 ## Configuration (Colab form)
@@ -59,18 +49,40 @@ TEMPERATURE = 0.2  # @param {type:"number"}
 MAX_ITERS = 4  # @param {type:"integer"}
 INSTRUCTIONS = (
     "Tu es un agent RAG spécialisé en jurisprudence française (jeu de données artefactory/Argimi-Legal-French-Jurisprudence). "
-    "Pour toute question juridique, commence par appeler search_legal_docs pour obtenir des ids et aperçus, puis lookup_legal_doc pour lire les décisions en intégralité. "
-    "Formule ta réponse en t'appuyant sur le texte récupéré et cite le titre de la décision utilisée. "
-    "Réponds en français de façon précise et utile. "
-    "Exemples : "
-    '- Q: "Quelles obligations de confraternité s\'imposent à un chirurgien-dentiste en campagne électorale ?" '
-    "R: Résume la décision du Conseil national de l'Ordre des chirurgiens-dentistes (Titre: campagne électorale 1996) et rappelle les articles 21, 52, 54 du code déontologique. "
-    '- Q: "Un avertissement disciplinaire peut-il être annulé pour critiques internes ?" '
-    "R: Explique que des critiques vives mais sans imputations précises, diffusées en interne, n'ont pas dépassé les limites de la polémique électorale (Titre: avertissement annulé). "
-    "- Q: \"Quelles limites à la liberté d'expression d'un praticien pendant une élection ordinale ?\" "
-    "R: Mentionne que le devoir de confraternité subsiste mais doit être concilié avec la liberté d'expression syndicale (Titre: campagne électorale 1996)."
+    "Pour chaque question, appelle d'abord search_legal_docs pour trouver des décisions puis lookup_legal_doc pour lire les textes en intégralité. "
+    "Chaque réponse doit citer explicitement la jurisprudence utilisée (titre ou référence) et la date de la décision. "
+    "Présente d'abord les éléments juridiques pertinents (faits, fondement, dispositif, articles cités), puis formule une réponse synthétique. "
+    "La réponse doit être une interprétation fondée uniquement sur les décisions récupérées, jamais sur ta mémoire du modèle. "
+    "Si aucune décision pertinente n'est récupérée ou si les éléments ne permettent pas de répondre, indique clairement que tu n'as pas les informations nécessaires pour répondre à la question. "
+    "Réponds en français de façon précise et utile."
 )  # @param {type:"string"}
 configured_index = None
+
+# %%
+import os
+import sys
+import zipfile
+from pathlib import Path
+from typing import Iterable
+from urllib.request import urlretrieve
+
+# Ensure the package is installed before importing.
+REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
+try:
+    import legal_rag as _  # noqa: F401
+except ImportError:
+    try:
+        get_ipython().run_line_magic(  # type: ignore[name-defined]
+            "pip",
+            f"install --quiet --upgrade git+{REPO_URL}",
+        )
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("Failed to install legal_rag via %pip; please install manually.") from exc
+    import legal_rag as _  # noqa: F401
+
+from etils import epath
+from legal_rag.assets import prepare_assets
+from legal_rag.assets import prepare_assets
 
 # %% [markdown]
 """
@@ -80,102 +92,16 @@ encoder zip must contain the ColBERT checkpoint used for indexing. The index zip
 must contain the PLAID index (e.g., an `index/` folder).
 """
 
-
 # %%
-def _fetch_zip(uri: str, dest: Path) -> Path:
-    if not uri:
-        raise FileNotFoundError("No URI provided for zip asset.")
-    if uri.startswith("http://") or uri.startswith("https://"):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        for attempt in range(3):
-            try:
-                print(f"Downloading {uri} -> {dest} (attempt {attempt + 1}/3)")
-                urlretrieve(uri, dest)
-                break
-            except Exception:
-                if attempt == 2:
-                    raise
-        return dest
-    src = Path(uri)
-    if not src.exists():
-        raise FileNotFoundError(f"Zip file not found: {src}")
-    return src
-
-
-def _extract_zip(zip_path: Path, target_dir: Path) -> Path:
-    if target_dir.exists():
-        # Clean existing contents to avoid mixing versions.
-        for child in target_dir.iterdir():
-            if child.is_file():
-                child.unlink()
-            else:
-                import shutil
-
-                shutil.rmtree(child)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(str(target_dir))
-    return target_dir
-
-
-def _resolve_model_dir(base_dir: Path) -> Path:
-    """Return a directory that contains a model config; prefer base, else a child."""
-    if (base_dir / "config.json").exists() or (base_dir / "config_sentence_transformers.json").exists():
-        return base_dir
-    candidates = [p for p in base_dir.iterdir() if p.is_dir()]
-    for cand in candidates:
-        if (cand / "config.json").exists() or (cand / "config_sentence_transformers.json").exists():
-            return cand
-    return base_dir
-
-
-def prepare_assets() -> tuple[str, Path]:
-    # Fetch and extract encoder.
-    encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
-    encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_PATH))
-    encoder_dir = _resolve_model_dir(encoder_dir)
-    encoder_path = str(encoder_dir.resolve())
-    print(f"✓ Encoder extracted to {encoder_path}")
-
-    # Fetch and extract index.
-    index_zip = _fetch_zip(INDEX_ZIP_URI, Path("./index.zip"))
-    index_dir = _extract_zip(index_zip, Path("./index"))
-    print(f"✓ Index extracted to {index_dir}")
-    return encoder_path, index_dir
-
-
 # Run asset prep early so downstream cells only depend on local paths.
-encoder_path, configured_index = prepare_assets()
-
-# %% [markdown]
-"""
-## Repo setup
-
-When opened directly from GitHub, this notebook installs the full repo so that
-`agent.py` and utilities are importable. If the package is already installed,
-the cell is a no-op.
-"""
-
-# %%
-REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
-
-try:
-    import legal_rag as _  # noqa: F401
-except ImportError:
-    import subprocess
-
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "--upgrade",
-            f"git+{REPO_URL}",
-        ],
-        check=True,
-    )
+encoder_path, configured_index = prepare_assets(
+    encoder_zip_uri=ENCODER_ZIP_URI,
+    index_zip_uri=INDEX_ZIP_URI,
+    encoder_dest=Path("./encoder_model"),
+    index_dest=Path("./index"),
+)
+print(f"✓ Encoder ready at {encoder_path}")
+print(f"✓ Index ready at {configured_index}")
 
 # %% [markdown]
 """

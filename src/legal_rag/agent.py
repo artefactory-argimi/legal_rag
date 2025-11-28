@@ -172,7 +172,28 @@ class LegalReActAgent(dspy.Module):
         )
 
     def forward(self, question: str) -> dspy.Prediction:
-        return self.react(question=question)
+        prediction = self.react(question=question)
+        trajectory = prediction.trajectory
+        documents: dict[str, str] = {}
+        idx = 0
+        while True:
+            name_key = f"tool_name_{idx}"
+            args_key = f"tool_args_{idx}"
+            obs_key = f"observation_{idx}"
+            if name_key not in trajectory:
+                break
+            if trajectory.get(name_key) == "lookup_legal_doc":
+                args = trajectory.get(args_key) or {}
+                if isinstance(args, dict):
+                    doc_id = args.get("doc_id") or args.get("id")
+                else:
+                    doc_id = None
+                observation = trajectory.get(obs_key)
+                if isinstance(doc_id, str) and isinstance(observation, str):
+                    documents[doc_id] = observation
+            idx += 1
+        prediction.documents = documents
+        return prediction
 
 
 def build_agent(
