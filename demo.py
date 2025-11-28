@@ -48,7 +48,7 @@ these form values. Set `GENERATOR_API_KEY` to your own HF token, or point
 # %%
 GENERATOR_API_KEY = "local"  # @param {type:"string"}
 GENERATOR_API_BASE = (
-    "http://localhost:8000/v1/chat/completions"  # @param {type:"string"}
+    "http://localhost:8000/v1"  # @param {type:"string"}
 )
 GENERATOR_MODEL_ID = (
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param {type:"string"}
@@ -59,7 +59,19 @@ SEARCH_K = 5  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
 MAX_ITERS = 4  # @param {type:"integer"}
-INSTRUCTIONS = "First call search_legal_docs to find candidate ids and previews. Then call lookup_legal_doc on specific ids you want to read in full. Ground your answer in the retrieved text and cite the document ids you used."  # @param {type:"string"}
+INSTRUCTIONS = (
+    "Tu es un agent RAG spécialisé en jurisprudence française (jeu de données artefactory/Argimi-Legal-French-Jurisprudence). "
+    "Pour toute question juridique, commence par appeler search_legal_docs pour obtenir des ids et aperçus, puis lookup_legal_doc pour lire les décisions en intégralité. "
+    "Formule ta réponse en t'appuyant sur le texte récupéré et cite le titre de la décision utilisée. "
+    "Réponds en français de façon précise et utile. "
+    "Exemples : "
+    "- Q: \"Quelles obligations de confraternité s'imposent à un chirurgien-dentiste en campagne électorale ?\" "
+    "R: Résume la décision du Conseil national de l'Ordre des chirurgiens-dentistes (Titre: campagne électorale 1996) et rappelle les articles 21, 52, 54 du code déontologique. "
+    "- Q: \"Un avertissement disciplinaire peut-il être annulé pour critiques internes ?\" "
+    "R: Explique que des critiques vives mais sans imputations précises, diffusées en interne, n'ont pas dépassé les limites de la polémique électorale (Titre: avertissement annulé). "
+    "- Q: \"Quelles limites à la liberté d'expression d'un praticien pendant une élection ordinale ?\" "
+    "R: Mentionne que le devoir de confraternité subsiste mais doit être concilié avec la liberté d'expression syndicale (Titre: campagne électorale 1996)."
+)  # @param {type:"string"}
 configured_index = None
 
 # %% [markdown]
