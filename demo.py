@@ -119,10 +119,16 @@ def _extract_zip(zip_path: Path, target_dir: Path) -> Path:
 
 def prepare_assets() -> tuple[str, Path]:
     # Fetch and extract encoder.
-    encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
-    encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_PATH))
-    encoder_path = str(encoder_dir.resolve())
-    print(f"✓ Encoder extracted to {encoder_path}")
+encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
+encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_PATH))
+encoder_path = str(encoder_dir.resolve())
+# If the archive contained a single subfolder, descend into it to reach the actual model files.
+if not (encoder_dir / "config.json").exists():
+    subdirs = [p for p in encoder_dir.iterdir() if p.is_dir()]
+    if len(subdirs) == 1:
+        encoder_dir = subdirs[0]
+        encoder_path = str(encoder_dir.resolve())
+print(f"✓ Encoder extracted to {encoder_path}")
 
     # Fetch and extract index.
     index_zip = _fetch_zip(INDEX_ZIP_URI, Path("./index.zip"))
