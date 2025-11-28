@@ -41,8 +41,9 @@ GENERATOR_MODEL_ID = (
 # Encoder zip (URL/path) and extracted path must match the model used for indexing.
 ENCODER_ZIP_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/colbert-encoder.zip"  # @param {type:"string"}
 ENCODER_MODEL_PATH = "./encoder_model"  # path where the encoder zip will be extracted (model files at root)
-# Index zip (URL/path) built offline from the same encoder.
-INDEX_ZIP_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"  # @param {type:"string"}
+# Index source built offline from the same encoder. Can be a remote zip or a
+# local directory path to a pre-extracted index.
+INDEX_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"  # @param {type:"string"}
 SEARCH_K = 5  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
@@ -60,11 +61,8 @@ configured_index = None
 
 # %%
 import os
-import sys
-import zipfile
 from pathlib import Path
 from typing import Iterable
-from urllib.request import urlretrieve
 
 # Ensure the package is installed before importing.
 REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
@@ -82,26 +80,30 @@ except ImportError:
 
 from etils import epath
 from legal_rag.assets import prepare_assets
-from legal_rag.assets import prepare_assets
 
 # %% [markdown]
 """
 ## Encoder and index assets (load first)
-Provide zipped assets (local path or URL, e.g., GitHub release assets). The
-encoder zip must contain the ColBERT checkpoint used for indexing. The index zip
-must contain the PLAID index (e.g., an `index/` folder).
+Provide assets as a remote zip (URL) or local path. The encoder zip must contain
+the ColBERT checkpoint used for indexing. For the index, you can point to a zip
+(local path or URL) or directly to a local index directory that already
+contains the PLAID files (e.g., an `index/` folder).
 """
 
 # %%
 # Run asset prep early so downstream cells only depend on local paths.
+index_source = Path(INDEX_URI).expanduser()
 encoder_path, configured_index = prepare_assets(
     encoder_zip_uri=ENCODER_ZIP_URI,
-    index_zip_uri=INDEX_ZIP_URI,
-    encoder_dest=Path("./encoder_model"),
+    index_zip_uri=INDEX_URI,
+    encoder_dest=Path(ENCODER_MODEL_PATH),
     index_dest=Path("./index"),
 )
 print(f"✓ Encoder ready at {encoder_path}")
-print(f"✓ Index ready at {configured_index}")
+if index_source.is_dir():
+    print(f"✓ Using local index at {configured_index}")
+else:
+    print(f"✓ Index ready at {configured_index}")
 
 # %% [markdown]
 """

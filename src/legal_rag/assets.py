@@ -17,8 +17,6 @@ def fetch_zip(uri: str, dest: Path) -> Path:
         urlretrieve(uri, dest)
         return dest
     src = Path(uri)
-    if not src.exists():
-        raise FileNotFoundError(f"Zip file not found: {src}")
     shutil.copy(src, dest)
     return dest
 
@@ -47,11 +45,15 @@ def resolve_model_dir(base_dir: Path) -> Path:
 
 def prepare_assets(
     encoder_zip_uri: str,
-    index_zip_uri: str,
+    index_zip_uri: str | Path,
     encoder_dest: Path,
     index_dest: Path,
 ) -> tuple[str, Path]:
-    """Fetch and extract encoder and index assets; return encoder path and index dir."""
+    """Fetch and extract encoder and index assets; return encoder path and index dir.
+
+    The index can be provided as a zipped archive (local path or remote URL) or as
+    a pre-existing directory path that already contains the index files.
+    """
     encoder_ready = encoder_dest.exists() and any(encoder_dest.iterdir())
     if encoder_ready:
         encoder_dir = resolve_model_dir(encoder_dest)
@@ -66,8 +68,11 @@ def prepare_assets(
             enc_zip_path.unlink(missing_ok=True)
     encoder_path = str(encoder_dir.resolve())
 
+    index_override = Path(index_zip_uri)
     index_ready = index_dest.exists() and any(index_dest.iterdir())
-    if index_ready:
+    if index_override.is_dir():
+        index_dir = index_override
+    elif index_ready:
         index_dir = index_dest
     else:
         index_dest.mkdir(parents=True, exist_ok=True)
