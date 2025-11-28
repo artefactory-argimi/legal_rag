@@ -18,12 +18,12 @@ This document outlines the design and implementation of a specialized Legal RAG 
 - Support for legal domains outside of French law.
 
 ### Key Architectural Principles
-- Hybrid deployment with two modes for flexibility and resource management:
-  1. Remote mode, activated by an `HF_TOKEN`, uses the Hugging Face Inference API to minimize local GPU memory consumption.
-  2. Local mode (default) launches a local SGLang inference server on the Colab instance.
-- Persistence on Google Drive for all generated artifacts, including the search index, compiled agent programs, and source code.
-- Separation of concerns between offline (indexing) and online (agent inference) processes.
-- Modularity via distinct Python modules imported by the main notebook.
+- Offline/online split: indexing is offline; inference runs from prebuilt assets.
+- Two runtime modes for the generator:
+  1. Remote mode via Hugging Face Inference (with `HF_TOKEN`).
+  2. Local mode (default) via an OpenAI-compatible server (e.g., SGLang).
+- Artifacts (encoder, index) are packaged as zips and fetched from GitHub release assets for reproducibility; can also be supplied via local paths.
+- Separation of concerns between offline (index build) and online (agent inference).
 - Preservation of legal nuance by returning full-text legal documents rather than snippets to maintain legal accuracy.
 
 ## System Architecture
@@ -52,7 +52,8 @@ An offline optimization process uses a teacher model to generate synthetic data 
 ## Codebase and Module Design
 
 ### Project Structure
-All Python source code resides in a dedicated folder on Google Drive (e.g., `/content/drive/MyDrive/rag_project/`) and is added to the Python path at runtime.
+- Offline assets: ColBERT encoder and PLAID index are zipped and published (e.g., GitHub release assets); the demo notebook downloads and extracts them before building the agent.
+- Source lives under `src/`; scripts under `scripts/`; notebook `demo.py` (py:percent) is the interactive entry point.
 
 ### Module Breakdown
 
@@ -60,8 +61,8 @@ All Python source code resides in a dedicated folder on Google Drive (e.g., `/co
   - Purpose: Single source of truth for all system settings.
   - Implementation: Uses `attrs` and `environ-config` to load configuration; auto-detects `HF_TOKEN` and the Google Drive path to configure `USE_REMOTE_API` and `INDEX_ROOT`; defines constants like `SEARCH_K`, model IDs, and paths.
 - `scripts/indexer.py` (offline corpus indexing)
-  - Purpose: Builds the RAGatouille/ColBERT search index; run once or when the data source is updated.
-  - Implementation: Checks for a pre-existing index on Google Drive and offers a fast track to unzip it if available; otherwise streams data via Google Grain and builds the index from scratch.
+  - Purpose: Builds the ColBERT/PLAID index; run offline and ship the result as a zip.
+  - Implementation: Uses Google Grain to stream the dataset; supports slicing for debugging; writes the PLAID index (no doc_mapping) ready to be zipped and published.
 - `tools.py` (agent retrieval tools)
   - Purpose: Provides the agent with callable functions to interact with the retrieval layer.
   - Implementation: Implements a singleton pattern to load the RAGatouille index into memory only once; exposes `search_legal_docs(query: str)` to return the full text of the top `K` documents.
@@ -76,9 +77,9 @@ All Python source code resides in a dedicated folder on Google Drive (e.g., `/co
   - Implementation:
     1. Data generation connects to the teacher LLM to create a synthetic `train.jsonl` dataset for training.
     2. Compilation uses the `dspy.MIPROv2` teleprompter to run the optimization process and saves the compiled agent as `optimized_agent.json` to Google Drive.
-- `main.ipynb` (interactive deployment notebook)
-  - Purpose: Main entry point and user interface for interacting with the agent.
-  - Implementation: Mounts Google Drive, adds the project to `sys.path`, conditionally launches the SGLang server, loads the desired agent (zero-shot or compiled), and runs an interactive chat loop.
+- `demo.py` (py:percent notebook)
+  - Purpose: Interactive entry point for inference.
+  - Implementation: Downloads/extracts encoder and index zips (defaults to GitHub release URLs), installs the repo, builds the agent with the local encoder/index, and runs a Q&A demo. HF login is only needed if using HF serverless; otherwise defaults to a local OpenAI-compatible generator.
 
 ## Implementation Plan
 

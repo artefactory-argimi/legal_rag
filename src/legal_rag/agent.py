@@ -65,6 +65,7 @@ def build_retrieval(
     index_name: str = DEFAULT_INDEX_NAME,
 ) -> tuple[models.ColBERT, retrieve.ColBERT]:
     """Load encoder and retriever from disk."""
+    # Prefer a local path when provided (e.g., downloaded zip extraction in the demo).
     colbert_kwargs: dict = {"model_name_or_path": encoder_model, "document_length": 496}
     # Prefer GPU for encoder if available (pylate uses torch under the hood).
     try:

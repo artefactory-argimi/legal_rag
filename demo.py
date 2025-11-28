@@ -48,10 +48,10 @@ GENERATOR_API_BASE = "http://localhost:8000/v1"  # @param {type:"string"}
 GENERATOR_MODEL_ID = (
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param {type:"string"}
 )
-# Encoder zip (local path or URL) and extracted path must match the model used for indexing.
+# Encoder zip (URL/path) and extracted path must match the model used for indexing.
 ENCODER_ZIP_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/colbert-encoder.zip"  # @param {type:"string"}
-ENCODER_MODEL_ID = "./encoder_model"  # path where the encoder zip will be extracted
-# Index zip (local path or URL) built offline from the same encoder.
+ENCODER_MODEL_PATH = "./encoder_model"  # path where the encoder zip will be extracted
+# Index zip (URL/path) built offline from the same encoder.
 INDEX_ZIP_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"  # @param {type:"string"}
 SEARCH_K = 5  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
@@ -71,6 +71,67 @@ INSTRUCTIONS = (
     "R: Mentionne que le devoir de confraternité subsiste mais doit être concilié avec la liberté d'expression syndicale (Titre: campagne électorale 1996)."
 )  # @param {type:"string"}
 configured_index = None
+
+# %% [markdown]
+"""
+## Encoder and index assets (load first)
+Provide zipped assets (local path or URL, e.g., GitHub release assets). The
+encoder zip must contain the ColBERT checkpoint used for indexing. The index zip
+must contain the PLAID index (e.g., an `index/` folder).
+"""
+
+# %%
+def _fetch_zip(uri: str, dest: Path) -> Path:
+    if not uri:
+        raise FileNotFoundError("No URI provided for zip asset.")
+    if uri.startswith("http://") or uri.startswith("https://"):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(3):
+            try:
+                print(f"Downloading {uri} -> {dest} (attempt {attempt + 1}/3)")
+                urlretrieve(uri, dest)
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+        return dest
+    src = Path(uri)
+    if not src.exists():
+        raise FileNotFoundError(f"Zip file not found: {src}")
+    return src
+
+
+def _extract_zip(zip_path: Path, target_dir: Path) -> Path:
+    if target_dir.exists():
+        # Clean existing contents to avoid mixing versions.
+        for child in target_dir.iterdir():
+            if child.is_file():
+                child.unlink()
+            else:
+                import shutil
+
+                shutil.rmtree(child)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(str(target_dir))
+    return target_dir
+
+
+def prepare_assets() -> tuple[str, Path]:
+    # Fetch and extract encoder.
+    encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
+    encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_PATH))
+    encoder_path = str(encoder_dir.resolve())
+    print(f"✓ Encoder extracted to {encoder_path}")
+
+    # Fetch and extract index.
+    index_zip = _fetch_zip(INDEX_ZIP_URI, Path("./index.zip"))
+    index_dir = _extract_zip(index_zip, Path("./index"))
+    print(f"✓ Index extracted to {index_dir}")
+    return encoder_path, index_dir
+
+# Run asset prep early so downstream cells only depend on local paths.
+encoder_path, configured_index = prepare_assets()
 
 # %% [markdown]
 """
@@ -106,8 +167,8 @@ except ImportError:
 """
 ## Hugging Face login (Serverless Inference)
 
-If running in Colab and using the Hugging Face provider without an `HF_TOKEN`
-set, prompt for a token using `huggingface_hub.interpreter_login()`.
+If running without a local generator and using the Hugging Face provider without
+an `HF_TOKEN` set, prompt for a token using `huggingface_hub.interpreter_login()`.
 """
 
 # %%
@@ -123,62 +184,10 @@ os.environ.setdefault("HF_HUB_TIMEOUT", "60")
 
 # %% [markdown]
 """
-## Encoder and index assets
-Provide zipped assets (local path or URL, e.g., GitHub release assets). The
-encoder zip must contain the ColBERT checkpoint used for indexing. The index zip
-must contain the PLAID index (e.g., an `index/` folder).
-"""
-
-
-# %%
-def _fetch_zip(uri: str, dest: Path) -> Path:
-    if not uri:
-        raise FileNotFoundError("No URI provided for zip asset.")
-    if uri.startswith("http://") or uri.startswith("https://"):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        print(f"Downloading {uri} -> {dest}")
-        urlretrieve(uri, dest)
-        return dest
-    src = Path(uri)
-    if not src.exists():
-        raise FileNotFoundError(f"Zip file not found: {src}")
-    return src
-
-
-def _extract_zip(zip_path: Path, target_dir: Path) -> Path:
-    if target_dir.exists():
-        # Clean existing contents to avoid mixing versions.
-        for child in target_dir.iterdir():
-            if child.is_file():
-                child.unlink()
-            else:
-                import shutil
-
-                shutil.rmtree(child)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(str(target_dir))
-    return target_dir
-
-
-# Fetch and extract encoder.
-encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
-encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_ID))
-ENCODER_MODEL_ID = str(encoder_dir)
-print(f"✓ Encoder extracted to {ENCODER_MODEL_ID}")
-
-# Fetch and extract index.
-index_zip = _fetch_zip(INDEX_ZIP_URI, Path("./index.zip"))
-index_dir = _extract_zip(index_zip, Path("./index"))
-configured_index = index_dir
-print(f"✓ Index extracted to {configured_index}")
-
-# %% [markdown]
-"""
 ## Encoder ↔ Index coupling
 The encoder loaded here must be the same model (or local snapshot path) used when
 building the index. If you indexed with a different ColBERT checkpoint, update
-`ENCODER_MODEL_ID` accordingly to avoid mismatched embeddings.
+the encoder assets accordingly to avoid mismatched embeddings.
 
 ## Agent configuration
 We build the DSPy ReAct agent using the helpers in `agent.py`.
@@ -200,7 +209,7 @@ generator_api_base = GENERATOR_API_BASE or None
 
 agent = build_agent(
     student_model=GENERATOR_MODEL_ID,
-    encoder_model=ENCODER_MODEL_ID,
+    encoder_model=encoder_path,
     generator_api_key=generator_api_key,
     generator_api_base=generator_api_base,
     index_folder=configured_index,  # used by ColBERT retriever in agent.py
