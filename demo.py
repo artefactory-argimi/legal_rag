@@ -28,12 +28,9 @@ import sys
 import zipfile
 from pathlib import Path
 from typing import Iterable
+from urllib.request import urlretrieve
 
 from etils import epath
-
-"""Detect Colab early; avoid hard imports elsewhere."""
-COLAB_NOTEBOOK_ID = os.environ.get("COLAB_NOTEBOOK_ID", None)
-IN_COLAB = COLAB_NOTEBOOK_ID is not None
 
 # %% [markdown]
 """
@@ -47,14 +44,15 @@ these form values. Set `GENERATOR_API_KEY` to your own HF token, or point
 
 # %%
 GENERATOR_API_KEY = "local"  # @param {type:"string"}
-GENERATOR_API_BASE = (
-    "http://localhost:8000/v1"  # @param {type:"string"}
-)
+GENERATOR_API_BASE = "http://localhost:8000/v1"  # @param {type:"string"}
 GENERATOR_MODEL_ID = (
     "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param {type:"string"}
 )
-# Encoder model used for queries; must match the model used when building the index.
-ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"
+# Encoder zip (local path or URL) and extracted path must match the model used for indexing.
+ENCODER_ZIP_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/colbert-encoder.zip"  # @param {type:"string"}
+ENCODER_MODEL_ID = "./encoder_model"  # path where the encoder zip will be extracted
+# Index zip (local path or URL) built offline from the same encoder.
+INDEX_ZIP_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"  # @param {type:"string"}
 SEARCH_K = 5  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
@@ -65,9 +63,9 @@ INSTRUCTIONS = (
     "Formule ta réponse en t'appuyant sur le texte récupéré et cite le titre de la décision utilisée. "
     "Réponds en français de façon précise et utile. "
     "Exemples : "
-    "- Q: \"Quelles obligations de confraternité s'imposent à un chirurgien-dentiste en campagne électorale ?\" "
+    '- Q: "Quelles obligations de confraternité s\'imposent à un chirurgien-dentiste en campagne électorale ?" '
     "R: Résume la décision du Conseil national de l'Ordre des chirurgiens-dentistes (Titre: campagne électorale 1996) et rappelle les articles 21, 52, 54 du code déontologique. "
-    "- Q: \"Un avertissement disciplinaire peut-il être annulé pour critiques internes ?\" "
+    '- Q: "Un avertissement disciplinaire peut-il être annulé pour critiques internes ?" '
     "R: Explique que des critiques vives mais sans imputations précises, diffusées en interne, n'ont pas dépassé les limites de la polémique électorale (Titre: avertissement annulé). "
     "- Q: \"Quelles limites à la liberté d'expression d'un praticien pendant une élection ordinale ?\" "
     "R: Mentionne que le devoir de confraternité subsiste mais doit être concilié avec la liberté d'expression syndicale (Titre: campagne électorale 1996)."
@@ -125,80 +123,54 @@ os.environ.setdefault("HF_HUB_TIMEOUT", "60")
 
 # %% [markdown]
 """
-## Encoder model download
-Ensure the encoder checkpoint is available locally before building the agent.
-If `ENCODER_MODEL_ID` is a local path, it is used as-is. Otherwise we download
-the repo snapshot; failure is fatal.
+## Encoder and index assets
+Provide zipped assets (local path or URL, e.g., GitHub release assets). The
+encoder zip must contain the ColBERT checkpoint used for indexing. The index zip
+must contain the PLAID index (e.g., an `index/` folder).
 """
+
 
 # %%
-from huggingface_hub import HfHubHTTPError, snapshot_download
+def _fetch_zip(uri: str, dest: Path) -> Path:
+    if not uri:
+        raise FileNotFoundError("No URI provided for zip asset.")
+    if uri.startswith("http://") or uri.startswith("https://"):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading {uri} -> {dest}")
+        urlretrieve(uri, dest)
+        return dest
+    src = Path(uri)
+    if not src.exists():
+        raise FileNotFoundError(f"Zip file not found: {src}")
+    return src
 
-encoder_path = Path(ENCODER_MODEL_ID)
-if not encoder_path.exists():
-    try:
-        print(f"Downloading encoder model '{ENCODER_MODEL_ID}'...")
-        encoder_snapshot = snapshot_download(repo_id=ENCODER_MODEL_ID, local_files_only=False)
-        encoder_path = Path(encoder_snapshot)
-        print(f"✓ Encoder downloaded to {encoder_path}")
-    except Exception as exc:  # pylint: disable=broad-except
-        raise RuntimeError(
-            f"Failed to download encoder model '{ENCODER_MODEL_ID}'. "
-            "Check network/HF token and try again."
-        ) from exc
-ENCODER_MODEL_ID = str(encoder_path)
 
-# %% [markdown]
-"""
-## Index loading
-You must upload a zipped archive of the index (e.g. `legal_rag_index.zip`) each
-run; the upload flow will unpack it in the current working directory (expecting
-an `index/` folder inside).
-"""
+def _extract_zip(zip_path: Path, target_dir: Path) -> Path:
+    if target_dir.exists():
+        # Clean existing contents to avoid mixing versions.
+        for child in target_dir.iterdir():
+            if child.is_file():
+                child.unlink()
+            else:
+                import shutil
 
-# %%
-if not IN_COLAB:
-    raise FileNotFoundError(
-        "Index upload is only supported in Colab. Build/run locally with an existing index."
-    )
+                shutil.rmtree(child)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(str(target_dir))
+    return target_dir
 
-from google.colab import files  # type: ignore
 
-uploaded = files.upload()
-if not uploaded:
-    raise FileNotFoundError("No index uploaded.")
-# Pick the first uploaded file.
-fn, data = next(iter(uploaded.items()))
-local_path = Path(f"./{fn}")
-print(f'User uploaded file "{fn}" with length {len(data)} bytes')
+# Fetch and extract encoder.
+encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
+encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_ID))
+ENCODER_MODEL_ID = str(encoder_dir)
+print(f"✓ Encoder extracted to {ENCODER_MODEL_ID}")
 
-# Persist uploaded bytes to disk before extracting.
-local_path.write_bytes(data)
-
-archive = epath.Path(local_path)
-if not archive.name.lower().endswith(".zip"):
-    raise ValueError(f"Uploaded file is not a zip archive: {archive}")
-
-content_root = Path(".").resolve()
-with zipfile.ZipFile(archive, "r") as zf:
-    zf.extractall(str(content_root))
-
-# The archive built by scripts/indexer.py should contain an `index/` directory.
-candidate = content_root / "index"
-if not candidate.exists():
-    # Fall back to a directory matching the archive stem, or a single extracted dir.
-    stem_dir = content_root / archive.stem
-    if stem_dir.exists():
-        candidate = stem_dir
-    else:
-        dirs = [p for p in content_root.iterdir() if p.is_dir()]
-        if len(dirs) == 1:
-            candidate = dirs[0]
-
-if not candidate.exists():
-    raise FileNotFoundError("Archive extracted but index folder not found.")
-
-configured_index = candidate
+# Fetch and extract index.
+index_zip = _fetch_zip(INDEX_ZIP_URI, Path("./index.zip"))
+index_dir = _extract_zip(index_zip, Path("./index"))
+configured_index = index_dir
 print(f"✓ Index extracted to {configured_index}")
 
 # %% [markdown]
