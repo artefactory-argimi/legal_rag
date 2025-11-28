@@ -118,11 +118,22 @@ def _extract_zip(zip_path: Path, target_dir: Path) -> Path:
     return target_dir
 
 
+def _resolve_model_dir(base_dir: Path) -> Path:
+    """Return a directory that contains a model config; prefer base, else a child."""
+    if (base_dir / "config.json").exists() or (base_dir / "config_sentence_transformers.json").exists():
+        return base_dir
+    candidates = [p for p in base_dir.iterdir() if p.is_dir()]
+    for cand in candidates:
+        if (cand / "config.json").exists() or (cand / "config_sentence_transformers.json").exists():
+            return cand
+    return base_dir
+
+
 def prepare_assets() -> tuple[str, Path]:
     # Fetch and extract encoder.
     encoder_zip = _fetch_zip(ENCODER_ZIP_URI, Path("./encoder.zip"))
     encoder_dir = _extract_zip(encoder_zip, Path(ENCODER_MODEL_PATH))
-    # Model files are expected at the root (no extra subfolder).
+    encoder_dir = _resolve_model_dir(encoder_dir)
     encoder_path = str(encoder_dir.resolve())
     print(f"✓ Encoder extracted to {encoder_path}")
 

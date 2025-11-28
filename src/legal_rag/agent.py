@@ -67,18 +67,18 @@ def build_retrieval(
     """Load encoder and retriever from disk."""
     # Prefer a local path when provided (e.g., downloaded zip extraction in the demo).
     model_path = epath.Path(encoder_model)
-    has_modules = (model_path / "modules.json").exists() or (
-        model_path / "config_sentence_transformers.json"
-    ).exists()
+    # If pointed at a pooling-only subfolder, step up to find config.json.
+    if not (model_path / "config.json").exists() and model_path.name == "1_Pooling":
+        parent = model_path.parent
+        if (parent / "config.json").exists() or (parent / "config_sentence_transformers.json").exists():
+            model_path = parent
+            encoder_model = str(parent)
     colbert_kwargs: dict = {
         "model_name_or_path": encoder_model,
         "document_length": 496,
-        # HF_ColBERT configs may not ship modules.json; force local_files_only
-        # when pointing at an extracted snapshot to avoid network fallback.
-        "has_modules": has_modules,
         "local_files_only": True if model_path.exists() else False,
         # Ensure slow tokenizer usage to avoid fast conversion errors for SentencePiece.
-        "tokenizer_kwargs": {"use_fast": False},
+        "tokenizer_kwargs": {"use_fast": False, "trust_remote_code": True},
     }
     # Prefer GPU for encoder if available (pylate uses torch under the hood).
     try:
