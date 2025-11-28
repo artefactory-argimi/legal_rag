@@ -125,6 +125,31 @@ os.environ.setdefault("HF_HUB_TIMEOUT", "60")
 
 # %% [markdown]
 """
+## Encoder model download
+Ensure the encoder checkpoint is available locally before building the agent.
+If `ENCODER_MODEL_ID` is a local path, it is used as-is. Otherwise we download
+the repo snapshot; failure is fatal.
+"""
+
+# %%
+from huggingface_hub import HfHubHTTPError, snapshot_download
+
+encoder_path = Path(ENCODER_MODEL_ID)
+if not encoder_path.exists():
+    try:
+        print(f"Downloading encoder model '{ENCODER_MODEL_ID}'...")
+        encoder_snapshot = snapshot_download(repo_id=ENCODER_MODEL_ID, local_files_only=False)
+        encoder_path = Path(encoder_snapshot)
+        print(f"✓ Encoder downloaded to {encoder_path}")
+    except Exception as exc:  # pylint: disable=broad-except
+        raise RuntimeError(
+            f"Failed to download encoder model '{ENCODER_MODEL_ID}'. "
+            "Check network/HF token and try again."
+        ) from exc
+ENCODER_MODEL_ID = str(encoder_path)
+
+# %% [markdown]
+"""
 ## Index loading
 You must upload a zipped archive of the index (e.g. `legal_rag_index.zip`) each
 run; the upload flow will unpack it in the current working directory (expecting
