@@ -19,15 +19,26 @@
 
 try:
     import legal_rag as _  # noqa: F401
-except ImportError as e:
-    REPO_URL = (
-        "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
-    )
-    get_ipython().run_line_magic(  # type: ignore[name-defined]
-        "pip",
-        f"install --quiet --upgrade git+{REPO_URL}",
-    )
-    raise e
+except ImportError:
+    import subprocess
+    import sys
+    import shutil
+
+    REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
+    EXTRA_DEPS = [
+        "transformers>=4.38,<5",
+        "sentence-transformers>=2.6,<3",
+    ]
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        subprocess.check_call(
+            [uv_bin, "pip", "install", "--quiet", f"git+{REPO_URL}", *EXTRA_DEPS]
+        )
+    else:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet", f"git+{REPO_URL}", *EXTRA_DEPS]
+        )
+    import legal_rag as _  # noqa: F401
 
 # %%
 GENERATOR_API_KEY = ""  # @param {type:"string"}
@@ -45,20 +56,18 @@ SEARCH_K = 5  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
 MAX_ITERS = 4  # @param {type:"integer"}
-INSTRUCTIONS = (
-    "Tu es un agent RAG spécialisé en jurisprudence constitutionnelle française (sous-ensemble 'constit' du jeu artefactory/Argimi-Legal-French-Jurisprudence). "
-    'Flow obligatoire: (1) search_legal_docs(query="…", k=5) pour obtenir des ids et scores puis (2) lookup_legal_doc(doc_id="…", score=…) sur les ids utiles avant de répondre. '
-    "N'emploie jamais de clés args/kwargs ni d'autres paramètres, uniquement query/k ou doc_id/score. "
-    'Exemples exacts: search_legal_docs(query="résiliation contrat imprévision", k=5) puis lookup_legal_doc(doc_id="2491", score=4.91). '
-    "Toujours réutiliser tel quel le doc_id (string) et le score renvoyés par search_legal_docs. "
-    "Si search_legal_docs renvoie \"No results.\", indique clairement qu'aucune décision pertinente n'a été trouvée. "
-    "Si la question dépasse la jurisprudence constitutionnelle (autres branches du droit), explique que le domaine n'est pas couvert et n'appelle pas les outils. "
-    "Chaque réponse doit citer explicitement la jurisprudence utilisée (titre ou référence) et la date de la décision. "
-    "Présente d'abord les éléments juridiques pertinents (faits, fondement, dispositif, articles cités), puis formule une réponse synthétique. "
-    "La réponse doit être une interprétation fondée uniquement sur les décisions récupérées, jamais sur ta mémoire du modèle. "
-    "Si aucune décision pertinente n'est récupérée ou si les éléments ne permettent pas de répondre, indique clairement que tu n'as pas les informations nécessaires pour répondre à la question. "
-    "Réponds en français de façon précise et utile."
-)  # @param {type:"string"}
+INSTRUCTIONS = """Tu es un agent RAG spécialisé en jurisprudence constitutionnelle française (sous-ensemble 'constit' du jeu artefactory/Argimi-Legal-French-Jurisprudence).
+Flow obligatoire: (1) search_legal_docs(query="…", k=5) pour obtenir des ids et scores puis (2) lookup_legal_doc(doc_id="…", score=…) sur les ids utiles avant de répondre.
+N'emploie jamais de clés args/kwargs ni d'autres paramètres, uniquement query/k ou doc_id/score.
+Exemples exacts: search_legal_docs(query="résiliation contrat imprévision", k=5) puis lookup_legal_doc(doc_id="2491", score=4.91).
+Toujours réutiliser tel quel le doc_id (string) et le score renvoyés par search_legal_docs.
+Si search_legal_docs renvoie "No results.", indique clairement qu'aucune décision pertinente n'a été trouvée.
+Si la question dépasse la jurisprudence constitutionnelle (autres branches du droit), explique que le domaine n'est pas couvert et n'appelle pas les outils.
+Chaque réponse doit citer explicitement la jurisprudence utilisée (titre ou référence) et la date de la décision.
+Présente d'abord les éléments juridiques pertinents (faits, fondement, dispositif, articles cités), puis formule une réponse synthétique.
+La réponse doit être une interprétation fondée uniquement sur les décisions récupérées, jamais sur ta mémoire du modèle.
+Si aucune décision pertinente n'est récupérée ou si les éléments ne permettent pas de répondre, indique clairement que tu n'as pas les informations nécessaires pour répondre à la question.
+Réponds en français de façon précise et utile."""  # @param {type:"string"}
 configured_index = None
 
 """Run the install cell (demo_install.py) before executing this notebook."""
@@ -69,7 +78,7 @@ from pathlib import Path
 from pprint import pformat
 from typing import Iterable
 
-import ecolab
+from etils import ecolab
 from rich import print as rprint
 
 ecolab.auto_display()
