@@ -17,28 +17,30 @@
 
 # %%
 
-try:
-    import legal_rag as _  # noqa: F401
-except ImportError:
-    import subprocess
-    import sys
-    import shutil
+# Install dependencies (requirements.txt) and legal_rag (no deps). Safe for Colab/Jupyter.
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
-    REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
-    EXTRA_DEPS = [
-        "transformers>=4.38,<5",
-        "sentence-transformers>=2.6,<3",
-    ]
-    uv_bin = shutil.which("uv")
-    if uv_bin:
-        subprocess.check_call(
-            [uv_bin, "pip", "install", "--quiet", f"git+{REPO_URL}", *EXTRA_DEPS]
-        )
-    else:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", f"git+{REPO_URL}", *EXTRA_DEPS]
-        )
-    import legal_rag as _  # noqa: F401
+REQ_FILE = Path("requirements.txt")
+REQ_URL = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/requirements.txt"
+REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
+UV_BIN = shutil.which("uv")
+PIP_CMD = [UV_BIN, "pip"] if UV_BIN else [sys.executable, "-m", "pip"]
+FORCE_FLAGS = ["--upgrade", "--force-reinstall"]
+
+
+def _run(cmd: list[str]) -> None:
+    subprocess.check_call(cmd)
+
+
+# Install full dependencies (with deps) from published requirements, then install legal_rag sans deps.
+_run([*PIP_CMD, "install", *FORCE_FLAGS, "-r", REQ_URL])
+_run([*PIP_CMD, "install", *FORCE_FLAGS, "--no-deps", f"git+{REPO_URL}"])
+
+# Verify import
+import legal_rag as _  # noqa: F401
 
 # %%
 GENERATOR_API_KEY = ""  # @param {type:"string"}
@@ -67,7 +69,7 @@ Chaque réponse doit citer explicitement la jurisprudence utilisée (titre ou r�
 Présente d'abord les éléments juridiques pertinents (faits, fondement, dispositif, articles cités), puis formule une réponse synthétique.
 La réponse doit être une interprétation fondée uniquement sur les décisions récupérées, jamais sur ta mémoire du modèle.
 Si aucune décision pertinente n'est récupérée ou si les éléments ne permettent pas de répondre, indique clairement que tu n'as pas les informations nécessaires pour répondre à la question.
-Réponds en français de façon précise et utile."""  # @param {type:"string"}
+Réponds en français de façon précise et utile."""
 configured_index = None
 
 """Run the install cell (demo_install.py) before executing this notebook."""
@@ -148,14 +150,6 @@ from legal_rag.agent import build_agent
 
 generator_api_key = GENERATOR_API_KEY or None
 generator_api_base = GENERATOR_API_BASE or None
-
-# Example: to call HF Inference Serverless directly
-# generator_api_key = "hf_xxx_your_token"
-# generator_api_base = None  # leave empty so dspy uses huggingface/<model>
-
-# DSPy expects the HF endpoint as lm="huggingface/<model_id>", e.g.:
-# import dspy
-# dspy.configure(lm="huggingface/mistralai/Mistral-7B-Instruct-v0.3", api_key="hf_xxx")
 
 agent = build_agent(
     student_model=GENERATOR_MODEL_ID,
