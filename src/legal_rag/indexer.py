@@ -118,8 +118,8 @@ def build_index(cfg: ScriptConfig):
         model_path = str(resolve_model_dir(tmp_model_dir))
         logging.info("Extracted model zip to %s", model_path)
 
-    # Always index the three known configs unless explicitly overridden.
-    config_list = [cfg.subset] if cfg.subset else ["cetat", "constit", "juri"]
+    # Single-config flow: index one config (default juri unless overridden).
+    config_name = cfg.subset or "juri"
     split_name = cfg.split or "train"
     try:
         model = models.ColBERT(
@@ -135,7 +135,7 @@ def build_index(cfg: ScriptConfig):
         CHUNK_SIZE = 32768
         batch_ids: list[str] = []
         batch_docs: list[str] = []
-        doc_id_to_dataset_id: dict[str, int] = {}
+        doc_id_to_idx: dict[str, int] = {}
         mapping_path = cfg.index_folder / "doc_mapping.json"
         global_doc_idx = 0
 
@@ -167,44 +167,59 @@ def build_index(cfg: ScriptConfig):
             return processed
 
         total = 0
-        for config in config_list:
-            logging.info("Loading dataset config=%s split=%s", config, split_name)
-            hf_ds = load_dataset(cfg.dataset, config, split=split_name)
-            base_ds = grain.MapDataset.source(hf_ds)
-            if cfg.slice_size:
-                # Use Grain's built-in slicing for fast subset debugging.
-                base_ds = base_ds.slice(slice(0, cfg.slice_size))
-            ds = base_ds.map(preprocess).to_iter_dataset()
-            for dataset_idx, item in enumerate(iter(ds)):
-                doc_id = str(global_doc_idx)
-                document = item["document"]
+        logging.info("Loading dataset config=%s split=%s", config_name, split_name)
+        hf_ds = load_dataset(cfg.dataset, config_name, split=split_name)
+        base_ds = grain.MapDataset.source(hf_ds)
+        if cfg.slice_size:
+            # Use Grain's built-in slicing for fast subset debugging.
+            base_ds = base_ds.slice(slice(0, cfg.slice_size))
+        ds = base_ds.map(preprocess).to_iter_dataset()
+        for dataset_idx, item in enumerate(iter(ds)):
+            doc_id = str(global_doc_idx)
+            document = item["document"]
 
-                batch_ids.append(doc_id)
-                batch_docs.append(document)
-                doc_id_to_dataset_id[doc_id] = dataset_idx
-                global_doc_idx += 1
-                if len(batch_ids) >= CHUNK_SIZE:
-                    total += flush_batch()
+            batch_ids.append(doc_id)
+            batch_docs.append(document)
+            doc_id_to_idx[doc_id] = dataset_idx
+            global_doc_idx += 1
+            if len(batch_ids) >= CHUNK_SIZE:
+                total += flush_batch()
         # Flush remainder
         total += flush_batch()
 
-        # Build mapping from PLAID IDs to dataset row IDs using the SQLite mapping produced by FastPlaid.
+        # Build mapping metadata used for lookup (PLAID id -> dataset idx).
         index_dir = cfg.index_folder / "legal_french_index"
         docid_to_plaid_path = index_dir / "documents_ids_to_plaid_ids.sqlite"
-        plaid_to_dataset_id: dict[str, int] = {}
+        if not docid_to_plaid_path.exists():
+            raise FileNotFoundError(
+                f"documents_ids_to_plaid_ids.sqlite not found at {docid_to_plaid_path}. "
+                "Index creation may have failed."
+            )
+        mapping_entries: dict[str, int] = {}
         with SqliteDict(docid_to_plaid_path, outer_stack=False) as docid_to_plaid:
             for doc_id, plaid_id in docid_to_plaid.items():
-                dataset_id = doc_id_to_dataset_id.get(doc_id)
-                if dataset_id is not None:
-                    plaid_to_dataset_id[str(plaid_id)] = dataset_id
+                dataset_idx = doc_id_to_idx.get(doc_id)
+                if dataset_idx is not None:
+                    mapping_entries[str(plaid_id)] = int(dataset_idx)
+        if not mapping_entries:
+            raise ValueError(
+                "documents_ids_to_plaid_ids.sqlite is empty; cannot build doc_mapping.json. "
+                "Re-run indexing."
+            )
 
         mapping_path.parent.mkdir(parents=True, exist_ok=True)
+        mapping_payload = {
+            "dataset": cfg.dataset,
+            "split": split_name,
+            "config": config_name,
+            "entries": mapping_entries,
+        }
         mapping_path.write_text(
-            json.dumps(plaid_to_dataset_id, ensure_ascii=False), encoding="utf-8"
+            json.dumps(mapping_payload, ensure_ascii=False), encoding="utf-8"
         )
         logging.info(
-            "Wrote doc_mapping.json (plaid_id -> dataset_id) with %d entries to %s",
-            len(plaid_to_dataset_id),
+            "Wrote doc_mapping.json (plaid_id -> dataset position) with %d entries to %s",
+            len(mapping_entries),
             mapping_path,
         )
 

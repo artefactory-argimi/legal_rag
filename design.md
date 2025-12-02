@@ -19,12 +19,13 @@ This document outlines the design and implementation of a specialized Legal RAG 
 
 ### Key Architectural Principles
 - Offline/online split: indexing is offline; inference runs from prebuilt assets.
-- Two runtime modes for the generator:
-  1. Remote mode via Hugging Face Inference (with `HF_TOKEN`).
-  2. Local mode (default) via an OpenAI-compatible server (e.g., SGLang).
-- Artifacts (encoder, index) are packaged as zips and fetched from GitHub release assets for reproducibility; can also be supplied via local paths.
+- Generator configured only via notebook form fields:
+  - HF Inference Serverless by setting `GENERATOR_API_KEY` (token) and leaving `GENERATOR_API_BASE` empty.
+  - OpenAI-compatible server by setting `GENERATOR_API_BASE` (URL /v1) and, if needed, `GENERATOR_API_KEY` for that server.
+- Artifacts (encoder, index) are packaged as zips and fetched from GitHub release assets for reproducibility; unpacked under `./downloaded/…`; local paths are also supported.
 - Separation of concerns between offline (index build) and online (agent inference).
 - Preservation of legal nuance by returning full-text legal documents rather than snippets to maintain legal accuracy.
+- Domain focus: only the constitutional subset (`constit`) of `artefactory/Argimi-Legal-French-Jurisprudence` is supported; out-of-domain questions are reported as such.
 
 ## System Architecture
 
@@ -57,15 +58,12 @@ An offline optimization process uses a teacher model to generate synthetic data 
 
 ### Module Breakdown
 
-- `config.py` (configuration)
-  - Purpose: Single source of truth for all system settings.
-  - Implementation: Uses `attrs` and `environ-config` to load configuration; auto-detects `HF_TOKEN` and the Google Drive path to configure `USE_REMOTE_API` and `INDEX_ROOT`; defines constants like `SEARCH_K`, model IDs, and paths.
 - `scripts/indexer.py` (offline corpus indexing)
   - Purpose: Builds the ColBERT/PLAID index; run offline and ship the result as a zip.
   - Implementation: Uses Google Grain to stream the dataset; supports slicing for debugging; writes the PLAID index (no doc_mapping) ready to be zipped and published.
 - `tools.py` (agent retrieval tools)
   - Purpose: Provides the agent with callable functions to interact with the retrieval layer.
-  - Implementation: Implements a singleton pattern to load the RAGatouille index into memory only once; exposes `search_legal_docs(query: str)` to return the full text of the top `K` documents.
+  - Implementation: Loads ColBERT encoder and PLAID retriever; `search_legal_docs(query, k)` returns ids and scores; `lookup_legal_doc(doc_id, mapping_entries, dataset)` returns formatted full text.
 - `agent.py` (core ReAct agent)
   - Purpose: Defines the cognitive architecture of the agent.
   - Implementation: Contains a `dspy.ReAct` module with the signature `question -> answer`; the DSPy language model (`dspy.LM`) is configured dynamically based on the `USE_REMOTE_API` flag.
@@ -79,7 +77,7 @@ An offline optimization process uses a teacher model to generate synthetic data 
     2. Compilation uses the `dspy.MIPROv2` teleprompter to run the optimization process and saves the compiled agent as `optimized_agent.json` to Google Drive.
 - `demo.py` (py:percent notebook)
   - Purpose: Interactive entry point for inference.
-  - Implementation: Downloads/extracts encoder and index zips (defaults to GitHub release URLs), installs the repo, builds the agent with the local encoder/index, and runs a Q&A demo. HF login is only needed if using HF serverless; otherwise defaults to a local OpenAI-compatible generator.
+  - Implementation: Downloads/extracts encoder and index zips (defaults to GitHub release URLs) into `./downloaded`, installs the repo, builds the agent with the local encoder/index, and runs a Q&A demo. Generator credentials are provided only via form fields as described above.
 
 ## Implementation Plan
 
@@ -87,11 +85,11 @@ An offline optimization process uses a teacher model to generate synthetic data 
 Goal: A functioning interactive chatbot on Colab that can search the legal index and answer questions using zero-shot reasoning.
 
 - Tasks:
-  1. Project setup: Create `config.py` with logic to detect Drive, `HF_TOKEN`, and define all paths and model IDs.
+  1. Project setup: Define notebook form fields for generator credentials and paths.
   2. Indexing: Implement `scripts/indexer.py` with Google Grain for data loading and ColBERT for indexing; include logic to use a pre-built zipped index.
-  3. Tooling: Implement `tools.py` with the singleton index loader and the `search_legal_docs` tool.
+  3. Tooling: Implement `tools.py` to load encoder/retriever and expose `search_legal_docs` and `lookup_legal_doc`.
   4. Agent: Implement `agent.py` with a zero-shot `dspy.ReAct` module.
-  5. Deployment: Create `main.ipynb` to mount Drive, launch the SGLang server if needed, and run the interactive chat.
+  5. Deployment: Create `demo.py` (py:percent) to download assets, build the agent, and run the interactive chat.
 
 ### Phase 2: MVP Evaluation
 Goal: Quantify the baseline performance of the zero-shot MVP agent.

@@ -1,11 +1,15 @@
 """DSPy-based ReAct agent wiring for the Legal RAG demo (new dspy API)."""
 
-import dspy
-from etils import epath
-from pylate import indexes, models, retrieve
+import json
+from functools import partial
+from pathlib import Path
 
-from legal_rag.colbert_utils import fix_colbert_embeddings
-from legal_rag.tools import lookup_legal_doc, search_legal_docs_metadata
+import dspy
+from datasets import load_dataset
+from etils import epath
+
+from legal_rag.retriever import build_encoder, build_retriever
+from legal_rag.tools import lookup_legal_doc, search_legal_docs
 
 # Defaults aligned with the design doc; adjust via function arguments as needed.
 DEFAULT_GENERATOR_MODEL = "mistralai/Magistral-Small-2509"
@@ -15,6 +19,9 @@ DEFAULT_INDEX_NAME = "legal_french_index"
 DEFAULT_SEARCH_K = 5
 DEFAULT_MAX_NEW_TOKENS = 512
 DEFAULT_TEMPERATURE = 0.2
+DEFAULT_DATASET = "artefactory/Argimi-Legal-French-Jurisprudence"
+DEFAULT_CONFIG = "juri"
+DEFAULT_SPLIT = "train"
 DEFAULT_INSTRUCTIONS = (
     "First call search_legal_docs to find candidate ids and previews. "
     "Then call lookup_legal_doc on specific ids you want to read in full. "
@@ -59,104 +66,13 @@ def build_language_model(
     )
 
 
-def build_retrieval(
-    encoder_model: str = DEFAULT_ENCODER_MODEL,
-    index_folder: epath.Path = DEFAULT_INDEX_FOLDER,
-    index_name: str = DEFAULT_INDEX_NAME,
-) -> tuple[models.ColBERT, retrieve.ColBERT]:
-    """Load encoder and retriever from disk."""
-    # Prefer a local path when provided (e.g., downloaded zip extraction in the demo).
-    model_path = epath.Path(encoder_model)
-    # If pointed at a pooling-only subfolder, step up to find config.json.
-    if not (model_path / "config.json").exists() and model_path.name == "1_Pooling":
-        parent = model_path.parent
-        if (parent / "config.json").exists() or (parent / "config_sentence_transformers.json").exists():
-            model_path = parent
-            encoder_model = str(parent)
-    colbert_kwargs: dict = {
-        "model_name_or_path": encoder_model,
-        "document_length": 496,
-        "local_files_only": True if model_path.exists() else False,
-        # Ensure slow tokenizer usage to avoid fast conversion errors for SentencePiece.
-        "tokenizer_kwargs": {"use_fast": False, "trust_remote_code": True},
-    }
-    # Prefer GPU for encoder if available (pylate uses torch under the hood).
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            colbert_kwargs["device"] = "cuda"
-        else:
-            colbert_kwargs["device"] = "cpu"
-    except Exception:
-        # If torch is absent or misconfigured, fall back to default device selection.
-        pass
-
-    encoder = models.ColBERT(**colbert_kwargs)
-    encoder = fix_colbert_embeddings(encoder)
-
-    index = indexes.PLAID(
-        index_folder,
-        index_name=index_name,
-        override=False,
-        show_progress=False,
-    )
-    retriever = retrieve.ColBERT(index=index)
-    return encoder, retriever
-
-
-class LegalSearchTool:
-    """Callable search tool for use inside ReAct (returns ids + previews)."""
-
-    def __init__(
-        self,
-        encoder: models.ColBERT,
-        retriever: retrieve.ColBERT,
-        index_folder: epath.Path,
-        k: int,
-    ) -> None:
-        self.encoder = encoder
-        self.retriever = retriever
-        self.index_folder = index_folder
-        self.k = k
-        self.__name__ = "search_legal_docs"
-
-    def __call__(self, query: str, k: int | None = None) -> str:
-        """Return formatted search results for the LM."""
-        results = search_legal_docs_metadata(
-            query=query,
-            encoder=self.encoder,
-            retriever=self.retriever,
-            index_folder=self.index_folder,
-            k=k or self.k,
-        )
-        if not results:
-            return "No results."
-
-        return "\n\n".join(
-            f"[{idx}] id={res['id']} score={res['score']:.4f}\nPreview: {res['preview']}"
-            for idx, res in enumerate(results)
-        )
-
-
-class LegalLookupTool:
-    """Callable lookup tool to fetch full text by document id."""
-
-    def __init__(self, index_folder: epath.Path) -> None:
-        self.index_folder = index_folder
-        self.__name__ = "lookup_legal_doc"
-
-    def __call__(self, doc_id: str) -> str:
-        return lookup_legal_doc(doc_id=doc_id, index_folder=self.index_folder)
-
-
 class LegalReActAgent(dspy.Module):
     """DSPy ReAct agent with a retrieval tool."""
 
     def __init__(
         self,
-        search_tool: LegalSearchTool,
-        lookup_tool: LegalLookupTool,
+        search_tool,
+        lookup_tool,
         max_iters: int = 4,
         instructions: str = DEFAULT_INSTRUCTIONS,
     ) -> None:
@@ -196,6 +112,19 @@ class LegalReActAgent(dspy.Module):
         return prediction
 
 
+def _resolve_index_dir(base: epath.Path | str) -> epath.Path:
+    """Return the index root (parent of the folder that contains fast_plaid_index)."""
+    base_path = Path(str(base)).expanduser().resolve()
+    fast_paths = sorted(
+        (p for p in base_path.glob("**/fast_plaid_index") if p.is_dir()),
+        key=lambda p: len(p.relative_to(base_path).parts),
+    )
+    if not fast_paths:
+        raise FileNotFoundError(f"No fast_plaid_index found under {base_path}")
+    fast_dir = fast_paths[0]
+    return epath.Path(fast_dir.parent.parent)
+
+
 def build_agent(
     student_model: str = DEFAULT_GENERATOR_MODEL,
     encoder_model: str = DEFAULT_ENCODER_MODEL,
@@ -211,7 +140,7 @@ def build_agent(
     temperature: float = DEFAULT_TEMPERATURE,
     instructions: str = DEFAULT_INSTRUCTIONS,
     max_iters: int = 4,
-) -> LegalReActAgent:
+    ) -> LegalReActAgent:
     """Factory that wires LM, retrieval, and ReAct agent."""
     lm = build_language_model(
         student_model=student_model,
@@ -222,18 +151,51 @@ def build_agent(
     )
     dspy.configure(lm=lm)
 
-    encoder, retriever = build_retrieval(
-        encoder_model=encoder_model,
-        index_folder=index_folder,
+    encoder = build_encoder(encoder_model=encoder_model)
+    resolved_index_folder = _resolve_index_dir(index_folder)
+    retriever = build_retriever(
+        index_folder=resolved_index_folder,
         index_name=index_name,
     )
-    search_tool = LegalSearchTool(
+    mapping_path = resolved_index_folder / "doc_mapping.json"
+    if not mapping_path.exists():
+        raise FileNotFoundError(f"doc_mapping.json not found under {resolved_index_folder}")
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+
+    if isinstance(mapping, dict) and "entries" in mapping:
+        entries = mapping.get("entries") or {}
+        dataset_name = mapping.get("dataset")
+        split = mapping.get("split")
+        config = mapping.get("config")
+    elif isinstance(mapping, dict):
+        # Legacy mapping where the file itself is plaid_id -> dataset_idx.
+        entries = mapping
+        dataset_name = None
+        split = None
+        config = None
+    else:
+        raise ValueError(f"Unrecognized doc_mapping.json structure in {mapping_path}")
+
+    if not isinstance(entries, dict) or not entries:
+        raise ValueError("doc_mapping.json contains no entries; re-run indexer.")
+    dataset_name = dataset_name or DEFAULT_DATASET
+    split = split or DEFAULT_SPLIT
+    config = config or DEFAULT_CONFIG
+    dataset = load_dataset(dataset_name, config, split=split)
+
+    lookup_tool = partial(
+        lookup_legal_doc,
+        mapping_entries=entries,
+        dataset=dataset,
+    )
+    lookup_tool.__name__ = "lookup_legal_doc"
+    search_tool = partial(
+        search_legal_docs,
         encoder=encoder,
         retriever=retriever,
-        index_folder=index_folder,
         k=search_k,
     )
-    lookup_tool = LegalLookupTool(index_folder=index_folder)
+    search_tool.__name__ = "search_legal_docs"
     return LegalReActAgent(
         search_tool,
         lookup_tool,

@@ -9,6 +9,8 @@ import zipfile
 from pathlib import Path
 from urllib.request import urlretrieve
 
+from sqlitedict import SqliteDict
+
 
 def fetch_zip(uri: str, dest: Path) -> Path:
     """Download or copy a zip to dest."""
@@ -82,9 +84,15 @@ def prepare_assets(
             index_dir = extract_zip(index_zip, index_dest)
         finally:
             idx_zip_path.unlink(missing_ok=True)
-    # Some archives contain an extra leading "index/" folder; reuse it if present.
-    nested_index_dir = index_dir / "index"
-    if nested_index_dir.is_dir():
-        index_dir = nested_index_dir
+    # Validate and normalize to the index root (folder passed to indexes.PLAID).
+    fast_plaid_paths = list(index_dir.glob("**/fast_plaid_index"))
+    if not fast_plaid_paths:
+        raise ValueError(f"Invalid index layout at {index_dir}. Expected a fast_plaid_index directory under this folder.")
+    fast_plaid = sorted(fast_plaid_paths, key=lambda p: len(p.relative_to(index_dir).parts))[0]
+    # fast_plaid = <index_folder>/<index_name>/fast_plaid_index -> index_folder is parent of index_name.
+    index_root = fast_plaid.parent.parent
+    if not index_root.exists():
+        raise ValueError(f"Could not resolve index root from fast_plaid_index at {fast_plaid}")
+    index_dir = index_root
 
     return encoder_path, index_dir

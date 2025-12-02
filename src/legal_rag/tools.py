@@ -1,81 +1,58 @@
-"""
-Retrieval tools for the Legal RAG Agent.
+"""Minimal search and lookup tools that operate on provided dependencies."""
 
-This module provides lightweight search (ids + previews), full lookup,
-and combined search+full text helpers. The model and retriever are passed
-as parameters to avoid reinstantiation.
-"""
+from __future__ import annotations
 
-import json
-from functools import lru_cache
+from typing import Mapping
 
-from etils import epath
 from pylate import models, retrieve
 
+from legal_rag.indexer import TEMPLATE_DOCUMENT
 
-@lru_cache(maxsize=1)
-def load_doc_mapping(index_folder: str) -> dict[str, str]:
+
+def lookup_legal_doc(
+    doc_id: str,
+    *,
+    mapping_entries: Mapping[str, int],
+    dataset,
+    score: str | float | None = None,
+) -> str:
     """
-    Load the document ID to text mapping from disk.
+    Resolve and render full document text from a doc_id using mapping and datasets.
 
-    This function is cached to ensure the mapping is loaded only once.
-
-    Args:
-        index_folder: Path to the folder containing doc_mapping.json
-
-    Returns:
-        Dictionary mapping document IDs to their full text content
+    The doc_id is assumed to be the PLAID id returned by search. mapping_entries
+    is a flat map: {plaid_id: dataset_idx}. Dataset is provided up front.
     """
-    mapping_file = epath.Path(index_folder) / "doc_mapping.json"
-    if not mapping_file.exists():
-        return {}
-    with mapping_file.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    doc_key = str(doc_id)
+    dataset_idx = mapping_entries.get(doc_key)
+    if dataset_idx is None:
+        return "[Document mapping entry missing]"
+
+    try:
+        row = dataset[int(dataset_idx)]
+    except Exception as exc:  # pragma: no cover
+        return f"[Failed to load document content: {exc}]"
+
+    base = TEMPLATE_DOCUMENT.format(
+        title=row.get("title") or "",
+        decision_date=row.get("decision_date") or "",
+        juridiction=row.get("juridiction") or "",
+        formation=row.get("formation") or "",
+        applied_law=row.get("applied_law") or "",
+        content=row.get("content") or "",
+        solution=row.get("solution") or "",
+    )
+    score_str = f" (score: {score})" if score is not None else ""
+    return f"Document id: {doc_id}{score_str}\n{base}"
 
 
-def lookup_legal_doc(doc_id: str, index_folder: epath.PathLike = "./index") -> str:
-    """
-    Fetch the full text for a document id from disk.
-    """
-    doc_mapping = load_doc_mapping(str(index_folder))
-    return doc_mapping.get(doc_id, "[Document not found]")
-
-
-def _preview(text: str, limit: int = 160) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3].rstrip() + "..."
-
-
-def _extract_metadata(text: str) -> dict[str, str]:
-    """Best-effort extraction of metadata from the templated document text."""
-    meta = {}
-    for line in text.splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            meta[key.strip()] = value.strip()
-    # Common keys produced by indexer.TEMPLATE_DOCUMENT
-    title = meta.get("Title", "")
-    return {
-        "title": title,
-        "date": meta.get("Date", ""),
-        "jurisdiction": meta.get("Jurisdiction", meta.get("Juridiction", "")),
-        "formation": meta.get("Formation", ""),
-        "solution": meta.get("Solution", ""),
-        "decision_text": meta.get("Decision Text", ""),
-    }
-
-
-def search_legal_docs_metadata(
+def search_legal_docs(
     query: str,
     encoder: models.ColBERT,
     retriever: retrieve.ColBERT,
-    index_folder: epath.PathLike = "./index",
     k: int = 5,
-    preview_chars: int = 160,
-) -> list[dict[str, str | float]]:
+) -> str:
     """
-    Search for legal documents and return ids with score, title, metadata, and a short preview.
+    Search for legal documents and return ids with scores (formatted for tools).
     """
     query_embedding = encoder.encode(
         query,
@@ -87,70 +64,11 @@ def search_legal_docs_metadata(
         k=k,
     )
     search_results = results[0] if results else []
-    doc_mapping = load_doc_mapping(str(index_folder))
 
-    enriched_results = []
-    for result in search_results:
-        doc_id = result["id"]
-        text = doc_mapping.get(doc_id, "[Document not found]")
-        meta = _extract_metadata(text)
-        enriched_results.append(
-            {
-                "id": doc_id,
-                "score": result["score"],
-                "title": meta.get("title", ""),
-                "metadata": meta,
-                "preview": _preview(text, limit=preview_chars),
-            }
-        )
-    return enriched_results
+    if not search_results:
+        return "No results."
 
-
-def search_legal_docs(
-    query: str,
-    encoder: models.ColBERT,
-    retriever: retrieve.ColBERT,
-    index_folder: epath.PathLike = "./index",
-    k: int = 5,
-) -> list[dict[str, str | float]]:
-    """
-    Search for legal documents and return their full text.
-
-    This function encodes the query using the provided model, retrieves the top-k
-    most relevant documents using the retriever, and returns their full text content.
-
-    Args:
-        query: The legal question or search query
-        model: The ColBERT model instance for encoding queries
-        retriever: The PLAID index instance for retrieving documents
-        index_folder: Path to the index folder containing doc_mapping.json
-        k: Number of documents to retrieve (default: 5)
-
-    Returns:
-        List of dictionaries containing:
-        - "id": document ID
-        - "score": relevance score
-        - "text": full text content of the document
-    """
-    # First get metadata to avoid duplicating logic.
-    meta = search_legal_docs_metadata(
-        query=query,
-        encoder=encoder,
-        retriever=retriever,
-        index_folder=index_folder,
-        k=k,
-        preview_chars=10_000,  # large enough to avoid truncation for full text
+    return "\n\n".join(
+        f"[{idx}] id={res['id']} score={res['score']:.4f}"
+        for idx, res in enumerate(search_results)
     )
-    # Now attach full text instead of previews.
-    doc_mapping = load_doc_mapping(str(index_folder))
-    results = []
-    for item in meta:
-        doc_id = item["id"]
-        results.append(
-            {
-                "id": doc_id,
-                "score": item["score"],
-                "text": doc_mapping.get(doc_id, "[Document not found]"),
-            }
-        )
-    return results
