@@ -16,11 +16,24 @@
 # ---
 
 # %%
-GENERATOR_API_KEY = "local"  # @param {type:"string"}
-GENERATOR_API_BASE = "http://localhost:8000/v1"  # @param {type:"string"}
-GENERATOR_MODEL_ID = (
-    "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param {type:"string"}
-)
+
+try:
+    import legal_rag as _  # noqa: F401
+except ImportError as e:
+    REPO_URL = (
+        "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
+    )
+    get_ipython().run_line_magic(  # type: ignore[name-defined]
+        "pip",
+        f"install --quiet --upgrade git+{REPO_URL}",
+    )
+    raise e
+
+# %%
+GENERATOR_API_KEY = ""  # @param {type:"string"}
+GENERATOR_API_BASE = ""  # @param {type:"string"}
+GENERATOR_MODEL_ID = "Qwen/Qwen3-0.6B"  # @param ["Qwen/Qwen3-0.6B", "mistralai/Mistral-Small-3.1-24B-Instruct-2503"]  # noqa: E501
+
 # Encoder Hugging Face repo id (must match the model used to build the index).
 ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"  # @param {type:"string"}
 # Index source built offline from the same encoder. Can be a remote zip or a
@@ -48,31 +61,31 @@ INSTRUCTIONS = (
 )  # @param {type:"string"}
 configured_index = None
 
+"""Run the install cell (demo_install.py) before executing this notebook."""
+
 # %%
 import os
 from pathlib import Path
-from typing import Iterable
 from pprint import pformat
+from typing import Iterable
 
+import ecolab
 from rich import print as rprint
 
-# Ensure the package is installed before importing.
-REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
+ecolab.auto_display()
+ecolab.auto_inspect()
 try:
-    import legal_rag as _  # noqa: F401
-except ImportError:
-    try:
-        get_ipython().run_line_magic(  # type: ignore[name-defined]
-            "pip",
-            f"install --quiet --upgrade git+{REPO_URL}",
-        )
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "Failed to install legal_rag via %pip; please install manually."
-        ) from exc
-    import legal_rag as _  # noqa: F401
+    import google.colab  # type: ignore
 
+    IN_COLAB = True
+except Exception:
+    IN_COLAB = False
+
+# Avoid optional vision deps when loading text models.
+os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
+os.environ.setdefault("DISABLE_TRANSFORMERS_AV", "1")
 from legal_rag.assets import extract_zip, fetch_zip
+
 
 # %%
 def prepare_index(index_uri: str | Path, index_dest: Path) -> Path:
@@ -159,8 +172,11 @@ for idx, question in enumerate(queries, start=1):
 
     prediction = agent(question=question)
     rprint(f"[bold green]Réponse[/]\n{prediction.answer}")
-    rprint(
-        f"[bold magenta]Trajectoire[/]\n{pformat(prediction.trajectory, width=100, sort_dicts=False)}"
-    )
+    if IN_COLAB:
+        ecolab.json(prediction.trajectory)  # interactive view in Colab
+    else:
+        rprint(
+            f"[bold magenta]Trajectoire[/]\n{pformat(prediction.trajectory, width=100, sort_dicts=False)}"
+        )
 
 # %%
