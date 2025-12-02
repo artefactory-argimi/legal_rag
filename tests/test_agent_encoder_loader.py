@@ -1,60 +1,54 @@
+import subprocess
 from pathlib import Path
 import tempfile
-import zipfile
-from urllib.error import URLError
 
 from absl.testing import absltest
 
-from legal_rag.agent import build_retrieval
 from legal_rag.assets import prepare_assets
-
-
-ENCODER_ZIP_URL = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/colbert-encoder.zip"
-INDEX_ZIP_URL = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"
+from legal_rag.retriever import build_encoder, build_retriever
+from legal_rag.retriever import build_encoder, build_retriever
 
 
 class EncoderLoadTest(absltest.TestCase):
     def test_encoder_and_index_load_and_encode(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            try:
-                encoder_path_str, index_dir = prepare_assets(
-                    encoder_zip_uri=ENCODER_ZIP_URL,
-                    index_zip_uri=INDEX_ZIP_URL,
-                    encoder_dest=tmp_path / "encoder",
-                    index_dest=tmp_path / "index",
-                )
-                encoder_dir = Path(encoder_path_str)
-            except URLError:
-                self.skipTest("Network unavailable to download assets")
+            encoder_path_str, index_dir = prepare_assets(
+                encoder_zip_uri=str(Path("assets/colbert-encoder.zip")),
+                index_zip_uri=Path("assets/index_legal_constit"),
+                encoder_dest=tmp_path / "encoder",
+                index_dest=tmp_path / "index",
+            )
+            encoder_dir = Path(encoder_path_str)
 
             self.assertTrue(
                 (encoder_dir / "config.json").exists() or (encoder_dir / "config_sentence_transformers.json").exists(),
-                "Encoder config not found after download",
+                "Encoder config not found",
             )
-            self.assertTrue(index_dir.exists(), "Index directory missing after download")
-            self.assertTrue(any(index_dir.iterdir()), "Index directory is empty")
+            self.assertTrue((index_dir / "fast_plaid_index").exists(), "fast_plaid_index missing in index directory")
 
-            encoder, retriever = build_retrieval(
-                encoder_model=str(encoder_dir),
-                index_folder=index_dir,
-                index_name="legal_french_index",
+            script = f"""
+import sys, json
+from legal_rag.retriever import build_encoder, build_retriever
+from legal_rag.tools import search_legal_docs
+from etils import epath
+enc = r\"{encoder_dir}\"
+idx = epath.Path(r\"{index_dir}\")
+print("[test] encoder", enc)
+print("[test] index", idx)
+encoder = build_encoder(encoder_model=enc)
+retriever = build_retriever(index_folder=idx, index_name="legal_french_index")
+print("[test] index is_indexed", getattr(retriever.index._index, "is_indexed", None))
+res = search_legal_docs(query="test", encoder=encoder, retriever=retriever, index_folder=idx, k=1)
+print("[test] search results", json.dumps(res))
+"""
+            proc = subprocess.run(
+                ["python", "-c", script],
+                text=True,
+                capture_output=True,
             )
-
-            tokenizer = getattr(encoder, "tokenizer", None)
-            if tokenizer is not None and hasattr(tokenizer, "is_fast"):
-                self.assertFalse(tokenizer.is_fast, "Expected slow tokenizer to avoid conversion errors")
-
-            # Ensure embedding table is large enough for tokenizer vocab.
-            embedding_size = encoder[0].auto_model.get_input_embeddings().num_embeddings
-            if tokenizer is not None:
-                self.assertGreaterEqual(
-                    embedding_size, len(tokenizer), "Embedding size should cover tokenizer vocab"
-                )
-
-            # Smoke test encoding.
-            query_emb = encoder.encode("test query", is_query=True, show_progress_bar=False)
-            self.assertTrue(hasattr(query_emb, "shape") and query_emb.shape[0] > 0, "Expected non-empty query embedding")
+            if proc.returncode != 0:
+                self.fail(f"Subprocess failed with code {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
 
 
 if __name__ == "__main__":

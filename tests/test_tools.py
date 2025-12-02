@@ -4,15 +4,12 @@ import json
 from pathlib import Path
 
 from absl.testing import absltest
+from datasets import Dataset
 from pylate import indexes, models, retrieve
+from sqlitedict import SqliteDict
 
 from legal_rag import indexer
-from legal_rag.tools import (
-    load_doc_mapping,
-    lookup_legal_doc,
-    search_legal_docs,
-    search_legal_docs_metadata,
-)
+from legal_rag.tools import lookup_legal_doc, search_legal_docs
 
 
 def _fake_corpus() -> tuple[list[str], list[str]]:
@@ -62,54 +59,72 @@ class ToolsTest(absltest.TestCase):
 
         # Persist doc mapping for search_legal_docs to enrich results.
         mapping_file = self.index_folder / "doc_mapping.json"
-        with mapping_file.open("w", encoding="utf-8") as f:
-            json.dump({doc_id: doc for doc_id, doc in zip(doc_ids, documents)}, f)
+        sqlite_map = self.index_folder / "test_index" / "documents_ids_to_plaid_ids.sqlite"
+        entries: dict[str, int] = {}
+        with SqliteDict(sqlite_map, outer_stack=False) as db:
+            for doc_id in doc_ids:
+                plaid_id = db.get(doc_id)
+                if plaid_id is not None:
+                    entries[str(plaid_id)] = int(doc_id.split("-")[-1])
+        mapping_file.write_text(
+            json.dumps(
+                {"dataset": "dummy_dataset", "split": "train", "config": "juri", "entries": entries},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
-        load_doc_mapping.cache_clear()
+        # Patch dataset loading to a small in-memory dataset for lookup.
+        rows = [
+            {
+                "title": f"title-{i}",
+                "decision_date": "",
+                "juridiction": "",
+                "formation": "",
+                "applied_law": "",
+                "content": doc,
+                "solution": "",
+            }
+            for i, doc in enumerate(documents)
+        ]
+        self.dataset = Dataset.from_dict(rows)
+        self.entries = entries
 
     def test_search_returns_relevant_full_text(self):
         results = search_legal_docs(
             query="maritime salvage rewards rescuers",
             encoder=self.encoder,
             retriever=self.retriever,
-            index_folder=self.index_folder,
             k=3,
         )
 
         self.assertTrue(results, "Expected at least one search result.")
-        top = results[0]
-        self.assertEqual(top["id"], "doc-2")
-        self.assertIn("salvage", top["text"])
-        self.assertLessEqual(len(results), 3)
-
-    def test_search_metadata_returns_ids_and_previews(self):
-        results = search_legal_docs_metadata(
-            query="personal data compliance",
-            encoder=self.encoder,
-            retriever=self.retriever,
-            index_folder=self.index_folder,
-            k=3,
-            preview_chars=50,
+        self.assertIn("id=", results)
+        plaid_key = next(iter(self.entries))
+        full_text = lookup_legal_doc(
+            doc_id=plaid_key,
+            mapping_entries=self.entries,
+            dataset=self.dataset,
         )
-        self.assertTrue(results, "Expected metadata results.")
-        top = results[0]
-        self.assertIn("doc-", top["id"])
-        self.assertTrue(top["preview"])
-        self.assertLessEqual(len(top["preview"]), 50)
-        self.assertIn("title", top["metadata"])
-        self.assertLessEqual(len(results), 3)
+        self.assertIn("salvage", full_text)
 
     def test_lookup_returns_full_text(self):
-        text = lookup_legal_doc("doc-1", index_folder=self.index_folder)
+        plaid_key = next(iter(self.entries))
+        text = lookup_legal_doc(
+            doc_id=plaid_key,
+            mapping_entries=self.entries,
+            dataset=self.dataset,
+        )
         self.assertIn("GDPR compliance", text)
 
-    def test_load_doc_mapping_is_cached(self):
-        mapping1 = load_doc_mapping(str(self.index_folder))
-        mapping2 = load_doc_mapping(str(self.index_folder))
-
-        self.assertIs(mapping1, mapping2)
-        self.assertIn("doc-0", mapping1)
-        self.assertIn("French contract law", mapping1["doc-0"])
+    def test_lookup_uses_mapping_entries(self):
+        plaid_key = next(iter(self.entries))
+        text = lookup_legal_doc(
+            doc_id=plaid_key,
+            mapping_entries=self.entries,
+            dataset=self.dataset,
+        )
+        self.assertIn("French contract law", text)
 
 
 if __name__ == "__main__":

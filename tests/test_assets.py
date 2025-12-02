@@ -16,8 +16,8 @@ class AssetsTest(absltest.TestCase):
                 zf.writestr("config.json", "{}")
 
             index_dir = tmp_path / "prebuilt_index"
-            index_dir.mkdir()
-            (index_dir / "manifest.txt").write_text("ready")
+            fast_plaid = index_dir / "my_index" / "fast_plaid_index"
+            fast_plaid.mkdir(parents=True, exist_ok=True)
 
             encoder_dest = tmp_path / "encoder_extracted"
             index_dest = tmp_path / "index_extracted"
@@ -29,7 +29,7 @@ class AssetsTest(absltest.TestCase):
                 index_dest=index_dest,
             )
 
-            self.assertEqual(resolved_index, index_dir)
+            self.assertEqual(resolved_index, fast_plaid.parent.parent)
             self.assertTrue(Path(encoder_path).is_dir())
             self.assertTrue((Path(encoder_path) / "config.json").exists())
 
