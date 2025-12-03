@@ -2,7 +2,7 @@
 # jupyter:
 #   jupytext:
 #     cell_markers: '"""'
-#     cell_metadata_filter: tags,-all
+#     cell_metadata_filter: tags,jupyter,hide_input,-all
 #     cell_metadata_json: true
 #     formats: ipynb,py:percent
 #     text_representation:
@@ -21,7 +21,7 @@
 # Préparation de l'environnement
 """
 
-# %% {"tags": ["hide_code"]}
+# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
 
 # Install dependencies (requirements.txt) and legal_rag (no deps). Safe for Colab/Jupyter.
 import shutil
@@ -60,8 +60,8 @@ DEFAULT_TOKEN = os.environ.get("HF_API_TOKEN", "")
 GENERATOR_API_KEY = DEFAULT_TOKEN  # @param {type:"string"}
 # OpenAI-compatible generator endpoint. HF router /v1 by default; Litellm will append /chat/completions.
 # Choose the default router, or override with OpenAI or a local server.
-GENERATOR_API_BASE = "https://router.huggingface.co/v1"  # @param ["https://router.huggingface.co/v1", "https://api.openai.com/v1", "http://localhost:8000/v1"]  # noqa: E501
-GENERATOR_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"  # @param ["Qwen/Qwen3-4B-Instruct-2507", "mistralai/Mistral-Small-3.1-24B-Instruct-2503", "HuggingFaceTB/SmolLM3-3B"]  # noqa: E501
+GENERATOR_API_BASE = "http://localhost:8000/v1"  # @param ["https://router.huggingface.co/v1", "https://api.openai.com/v1", "http://localhost:8000/v1"]  # noqa: E501
+GENERATOR_MODEL_ID = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param ["Qwen/Qwen3-4B-Thinking-2507", "mistralai/Mistral-Small-3.1-24B-Instruct-2503", "HuggingFaceTB/SmolLM3-3B"]  # noqa: E501
 
 # Encoder Hugging Face repo id (must match the model used to build the index).
 ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"  # @param {type:"string"}
@@ -69,7 +69,7 @@ ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"  # @param {type:"str
 # local directory path to a pre-extracted index. INDEX_PATH controls where a zip
 # is extracted if a local directory is not passed directly.
 INDEX_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"  # @param {type:"string"}
-INDEX_PATH = "./downloaded/index_legal_constit/"  # @param {type:"string"}
+INDEX_PATH = "./downloads/index_legal_constit/"  # @param {type:"string"}
 SEARCH_K = 10  # @param {type:"integer"}
 MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
@@ -90,7 +90,7 @@ configured_index = None
 # Chargement des utilitaires
 """
 
-# %% {"tags": ["hide_code"]}
+# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
 import os
 from pathlib import Path
 from pprint import pformat
@@ -112,37 +112,6 @@ except Exception:
 os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
 os.environ.setdefault("DISABLE_TRANSFORMERS_AV", "1")
 from legal_rag.assets import extract_zip, fetch_zip
-
-
-def resolve_generator_endpoint(
-    model_id: str, api_base: str | None
-) -> tuple[str, str | None]:
-    """Normalize model id and pick the OpenAI-compatible base URL.
-
-    - Keep dropdown options intact; users can still override api_base manually (e.g., local server).
-    - When api_base is provided (default: HF router /v1), accept the router, OpenAI, or local keywords
-      and normalize them to full URLs; otherwise use the provided URL.
-    - If api_base is empty, fall back to litellm's HF provider prefix.
-    """
-
-    clean_model_id = model_id.rstrip(":")
-    if api_base:
-        base = api_base.rstrip("/")
-        lowered = base.lower()
-        if lowered in {
-            "https://router.huggingface.co/v1",
-            "router",
-            "hf",
-            "huggingface",
-        }:
-            return clean_model_id, "https://router.huggingface.co/v1"
-        if lowered in {"https://api.openai.com/v1", "openai"}:
-            return clean_model_id, "https://api.openai.com/v1"
-        if lowered in {"http://localhost:8000/v1", "local"}:
-            return clean_model_id, "http://localhost:8000/v1"
-        return clean_model_id, base
-    # Fallback: let litellm expand the HF provider prefix to the router URL.
-    return f"hf-inference/{clean_model_id}", None
 
 
 def find_existing_index_root(base: Path) -> Path | None:
@@ -167,7 +136,7 @@ def find_existing_index_root(base: Path) -> Path | None:
     return index_root if index_root.exists() else None
 
 
-# %% {"tags": ["hide_code"]}
+# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
 def prepare_index(index_uri: str | Path, index_dest: Path) -> Path:
     """Fetch and extract the index assets; return the resolved index directory."""
     index_override = Path(index_uri).expanduser()
@@ -220,9 +189,8 @@ os.environ.setdefault("HF_HUB_TIMEOUT", "60")
 from legal_rag.agent import build_agent
 
 generator_api_key = GENERATOR_API_KEY or None
-clean_model_id, generator_api_base = resolve_generator_endpoint(
-    GENERATOR_MODEL_ID, GENERATOR_API_BASE or None
-)
+generator_api_base = (GENERATOR_API_BASE or "https://router.huggingface.co/v1").rstrip("/")
+clean_model_id = GENERATOR_MODEL_ID
 
 agent = build_agent(
     student_model=clean_model_id,
@@ -260,3 +228,15 @@ for idx, question in enumerate(queries, start=1):
         rprint(
             f"[bold magenta]Trajectoire[/]\n{pformat(prediction.trajectory, width=100, sort_dicts=False)}"
         )
+
+# %%
+rprint(f"[bold cyan]Question {idx}[/]: {question}")
+
+prediction = agent(question=question)
+rprint(f"[bold green]Réponse[/]\n{prediction.answer}")
+if IN_COLAB:
+    ecolab.json(prediction.trajectory)  # interactive view in Colab
+else:
+    rprint(
+        f"[bold magenta]Trajectoire[/]\n{pformat(prediction.trajectory, width=100, sort_dicts=False)}"
+    )
