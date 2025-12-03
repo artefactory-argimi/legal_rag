@@ -3,106 +3,77 @@
 ## Overview
 
 ### Objective
-This document outlines the design and implementation of a specialized Legal RAG (Retrieval-Augmented Generation) agent for answering complex questions related to French law. The system uses an Agentic ReAct architecture to autonomously retrieve and reason over the French Civil Code and other legal texts.
+Deliver a notebook-first RAG experience that answers French legal questions by searching a dense index of jurisprudence and quoting the full decisions it uses.
 
 ### Goals
-- Provide accurate, context-aware answers to French legal queries.
-- Implement a ReAct agent capable of autonomously deciding when to search its knowledge base.
-- Ensure the system is easily deployable and runnable within a Google Colab environment.
-- Create a modular codebase that separates indexing, inference, and evaluation.
-- Persist critical artifacts (e.g., search index, source code, configurations) on Google Drive to ensure statefulness across sessions.
+- Ground answers in retrieved decisions (ids, scores, and full text).
+- Keep setup simple for Colab and local runs: install, download/extract assets, ask questions.
+- Allow switching generator endpoints (HF router or any OpenAI-compatible server).
+- Reuse retrieval assets via either a zipped index or a local index directory.
 
 ### Non-Goals
-- A production-grade, highly available service; the focus is a robust demonstration within the Colab ecosystem.
-- A user-facing graphical web application; the primary interface will be an interactive Python notebook.
-- Support for legal domains outside of French law.
+- Production hosting or high availability.
+- Browser UI; the primary interface is the notebook.
+- Coverage beyond the indexed French legal corpus.
 
-### Key Architectural Principles
-- Offline/online split: indexing is offline; inference runs from prebuilt assets.
-- Generator configured only via notebook form fields:
-  - HF Inference Serverless by setting `GENERATOR_API_KEY` (token) and leaving `GENERATOR_API_BASE` empty.
-  - OpenAI-compatible server by setting `GENERATOR_API_BASE` (URL /v1) and, if needed, `GENERATOR_API_KEY` for that server.
-- Artifacts (encoder, index) are packaged as zips and fetched from GitHub release assets for reproducibility; unpacked under `./downloaded/…`; local paths are also supported.
-- Separation of concerns between offline (index build) and online (agent inference).
-- Preservation of legal nuance by returning full-text legal documents rather than snippets to maintain legal accuracy.
-- Domain focus: only the constitutional subset (`constit`) of `artefactory/Argimi-Legal-French-Jurisprudence` is supported; out-of-domain questions are reported as such.
+### Key Principles
+- Clear offline/online split: index building happens offline; inference consumes prebuilt assets.
+- Artifact reuse: encoder and index can be provided as zips or existing directories; layout is normalized before use.
+- Explicit scope in prompts: default instructions focus on constitutional jurisprudence but can be swapped with another index/prompt pair.
+- Retrieval-first answers: always cite retrieved documents and show full decision text via the lookup tool.
 
 ## System Architecture
 
-### High-Level Diagram Description
-The system is orchestrated by the DSPy framework. A user query is first processed by the ReAct agent (student model). The agent can use its retrieval tool to search the ColBERT index. The retrieval tool, powered by RAGatouille, queries the index and returns relevant legal documents. The agent uses this retrieved context to reason and generate a final, evidence-based answer.
+### High-Level Flow
+- User question (French) enters the agent.
+- Agent tool calls:
+  - `search_legal_docs`: encodes the query with ColBERT and retrieves top-k ids/scores from the PLAID index.
+  - `lookup_legal_doc`: given an id (+ optional score), renders the full decision using `doc_mapping.json` to access the HF dataset row.
+- Agent responds in French, citing the decisions used.
 
-An offline optimization process uses a teacher model to generate synthetic data and compile the agent's program for improved performance.
+### Runtime Components
+- Generator LM: configured through `build_language_model` in `src/legal_rag/agent.py`; supports HF Inference (token) or any OpenAI-compatible `api_base`. Defaults: `mistralai/Magistral-Small-2509` in code; `demo.py` exposes other options (e.g., Qwen 4B).
+- Retrieval stack:
+  - Encoder: `maastrichtlawtech/colbert-legal-french`.
+  - Index: PLAID format with `fast_plaid_index` and `doc_mapping.json`.
+  - Dataset: `artefactory/Argimi-Legal-French-Jurisprudence` loaded to resolve ids to full text.
+- Notebook glue (`demo.py`): installs dependencies, downloads/extracts encoder/index if needed, configures the LM endpoint, builds the agent, and runs sample queries.
 
-### Core Components
+### Offline Assets
+- Indexer (`src/legal_rag/indexer.py`, `scripts/indexer.py`):
+  - Templates metadata into each decision (`TEMPLATE_DOCUMENT`).
+  - Encodes documents with ColBERT and builds a PLAID index (`legal_french_index` by default).
+  - Writes `doc_mapping.json` with `{dataset, split, config, entries: plaid_id -> dataset_idx}` for lookups.
+- Assets helper (`src/legal_rag/assets.py`): downloads or copies zips, extracts them, and resolves the correct root directories.
 
-- Inference layer
-  - Student model (agent): `mistralai/Magistral-Small-2509`, chosen for strong French-language reasoning in a manageable size.
-  - Teacher model (optimizer): `openai/gpt-oss-120b`, used to generate high-quality synthetic data for agent training and optimization.
-  - Provider switching: DSPy (via LiteLLM) handles routing. Use `huggingface/<model>` with `HF_TOKEN` when no `api_base` is provided; set an OpenAI-compatible `api_base` to route to a local server. Default stays on the mistral student model; switching happens inside DSPy based solely on the presence of `api_base` and credentials.
-- Retrieval layer
-  - Engine: RAGatouille, implementing the ColBERTv2 algorithm for dense retrieval.
-  - Embedding model: `maastrichtlawtech/colbert-legal-french`, specialized for French legal terminology.
-  - Index storage: Persisted on Google Drive and loaded into memory at runtime for fast access.
-- Data layer
-  - Data source: `AgentPublic/legi` (French Civil Law corpus) and `maastrichtlawtech/colbert-legal-french`.
-  - ETL: Google Grain for deterministic and reproducible data loading during the indexing phase.
-- Orchestration layer
-  - Framework: DSPy to define, optimize, and serve the agent; manages the ReAct loop, tool integration, and prompt compilation via its teleprompters.
+## Module Responsibilities
+- `src/legal_rag/agent.py`: Builds the language model, loads encoder/retriever, and wires the `LegalReActAgent` with search/lookup tools and trajectory capture.
+- `src/legal_rag/tools.py`: Implements the two tools:
+  - `search_legal_docs(query, k)`: encode + retrieve, returns ids/scores.
+  - `lookup_legal_doc(doc_id, mapping_entries, dataset, score)`: render full text for a retrieved id.
+- `src/legal_rag/retriever.py`: Loads the ColBERT encoder and PLAID retriever, constraining worker count for constrained environments.
+- `src/legal_rag/assets.py`: Fetches/extracts encoder/index zips and normalizes directory layouts.
+- `src/legal_rag/indexer.py`: Offline PLAID builder with templating, batching, embedding, and `doc_mapping.json` creation.
+- `demo.py`: Py:percent notebook that installs deps, prepares assets, configures generator endpoints, builds the agent, and runs sample queries.
 
-## Codebase and Module Design
+## Data and Index Layout
+- Index root must contain `<index_name>/fast_plaid_index` (defaults to `legal_french_index/fast_plaid_index`).
+- `doc_mapping.json` stored at the index root:
+  - `dataset`, `split`, `config`: identifiers for `load_dataset`.
+  - `entries`: `{plaid_id: dataset_idx}` for lookups.
+- Dataset defaults: `artefactory/Argimi-Legal-French-Jurisprudence`, config `juri` unless overridden at index build time.
 
-### Project Structure
-- Offline assets: ColBERT encoder and PLAID index are zipped and published (e.g., GitHub release assets); the demo notebook downloads and extracts them before building the agent.
-- Source lives under `src/`; scripts under `scripts/`; notebook `demo.py` (py:percent) is the interactive entry point.
+## Notebook Execution Flow (demo.py)
+1. Install dependencies (requirements.txt) and the package (no-deps).
+2. Resolve generator endpoint from form fields (`GENERATOR_MODEL_ID`, `GENERATOR_API_KEY`, `GENERATOR_API_BASE`).
+3. Prepare assets:
+   - Download/extract encoder zip unless already present.
+   - Download/extract index zip or reuse a provided directory; validate `fast_plaid_index`.
+4. Build the agent with the encoder, retriever, dataset, and prompt instructions (default prompt emphasizes constitutional jurisprudence).
+5. Run sample questions; display answers and tool trajectories.
 
-### Module Breakdown
-
-- `scripts/indexer.py` (offline corpus indexing)
-  - Purpose: Builds the ColBERT/PLAID index; run offline and ship the result as a zip.
-  - Implementation: Uses Google Grain to stream the dataset; supports slicing for debugging; writes the PLAID index (no doc_mapping) ready to be zipped and published.
-- `tools.py` (agent retrieval tools)
-  - Purpose: Provides the agent with callable functions to interact with the retrieval layer.
-  - Implementation: Loads ColBERT encoder and PLAID retriever; `search_legal_docs(query, k)` returns ids and scores; `lookup_legal_doc(doc_id, mapping_entries, dataset)` returns formatted full text.
-- `agent.py` (core ReAct agent)
-  - Purpose: Defines the cognitive architecture of the agent.
-  - Implementation: Contains a `dspy.ReAct` module with the signature `question -> answer`; the DSPy language model (`dspy.LM`) is configured dynamically based on the `USE_REMOTE_API` flag.
-- `evaluate.py` (agent evaluation)
-  - Purpose: Measures agent performance against a predefined benchmark.
-  - Implementation: Loads `test.jsonl`; runs the agent (zero-shot MVP or optimized version) against test questions and calculates metrics, including answer accuracy and tool-use correctness.
-- `optimize.py` (agent compilation and optimization)
-  - Purpose: Improves the agent's prompts and logic.
-  - Implementation:
-    1. Data generation connects to the teacher LLM to create a synthetic `train.jsonl` dataset for training.
-    2. Compilation uses the `dspy.MIPROv2` teleprompter to run the optimization process and saves the compiled agent as `optimized_agent.json` to Google Drive.
-- `demo.py` (py:percent notebook)
-  - Purpose: Interactive entry point for inference.
-  - Implementation: Downloads/extracts encoder and index zips (defaults to GitHub release URLs) into `./downloaded`, installs the repo, builds the agent with the local encoder/index, and runs a Q&A demo. Generator credentials are provided only via form fields as described above.
-
-## Implementation Plan
-
-### Phase 1: Minimum Viable Product (MVP)
-Goal: A functioning interactive chatbot on Colab that can search the legal index and answer questions using zero-shot reasoning.
-
-- Tasks:
-  1. Project setup: Define notebook form fields for generator credentials and paths.
-  2. Indexing: Implement `scripts/indexer.py` with Google Grain for data loading and ColBERT for indexing; include logic to use a pre-built zipped index.
-  3. Tooling: Implement `tools.py` to load encoder/retriever and expose `search_legal_docs` and `lookup_legal_doc`.
-  4. Agent: Implement `agent.py` with a zero-shot `dspy.ReAct` module.
-  5. Deployment: Create `demo.py` (py:percent) to download assets, build the agent, and run the interactive chat.
-
-### Phase 2: MVP Evaluation
-Goal: Quantify the baseline performance of the zero-shot MVP agent.
-
-- Tasks:
-  1. Test set creation: Manually or semi-automatically create a high-quality `test.jsonl` file containing representative legal questions and reference answers.
-  2. Evaluation script: Implement `evaluate.py`, load the MVP agent and the test set, run the evaluation, and report baseline metrics for answer quality and tool usage.
-
-### Phase 3: Optimization and Tuning
-Goal: Improve the agent's reasoning and tool-use performance through automated compilation and then verify the improvement.
-
-- Tasks:
-  1. Synthetic data generation: Implement data generation within `optimize.py` to create a `train.jsonl` file using the teacher LLM.
-  2. Metric definition: Define a validation metric within the optimizer that aligns with the metrics used in `evaluate.py`.
-  3. Agent compilation: Implement and run the `dspy.MIPROv2` optimization loop in `optimize.py`; save the resulting `optimized_agent.json` to Drive.
-  4. Comparative evaluation: Re-run `evaluate.py`, loading `optimized_agent.json`, and compare performance against the MVP baseline to quantify improvement.
+## Current Gaps and Considerations
+- No automated evaluation or optimization pipeline is present.
+- Indexer assumes single-config builds; multi-config support would need batching/metadata extensions.
+- Instructions are tuned to a constitutional subset; adjust prompt + index together for other domains.
+- Index building is resource-intensive; intended for offline/GPU environments, not the Colab runtime.
