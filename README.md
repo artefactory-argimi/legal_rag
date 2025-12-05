@@ -45,6 +45,30 @@ Ensure an index folder with `fast_plaid_index` and `doc_mapping.json` is availab
 - `src/legal_rag/retriever.py`: Loads the ColBERT encoder and PLAID retriever.
 - `src/legal_rag/assets.py`: Downloads/extracts encoder and index zips and normalizes their layout.
 - `src/legal_rag/indexer.py` and `scripts/indexer.py`: Offline pipeline to build a PLAID index and `doc_mapping.json` from `artefactory/Argimi-Legal-French-Jurisprudence`.
+- `scripts/generate_question.py`: Generates two questions per decision (one supported by the text, one generic/unanswerable) using a local OpenAI-compatible endpoint.
+
+## Generate question pairs with a local SGLang server
+
+Ensure an OpenAI-compatible server is running at `http://localhost:8000/v1` (for example, an SGLang launch). Then generate a HF dataset of questions grounded in `artefactory/Argimi-Legal-French-Jurisprudence`:
+
+```bash
+python scripts/generate_question.py \
+  --mapping /path/to/doc_mapping.json \
+  --doc_ids 123 456 \
+  --output_dir ./artifacts/question_pairs \
+  --api_base http://localhost:8000/v1 \
+  --model mistralai/Mistral-Small-3.1-24B-Instruct-2503
+```
+
+Direct text is also supported (bypasses doc_mapping): `python scripts/generate_question.py --doc_text_file ./decision.txt --doc_id my-doc --output_dir ./artifacts/question_pairs`.
+
+Inspect the saved dataset with:
+
+```python
+from datasets import load_from_disk
+ds = load_from_disk("./artifacts/question_pairs")
+print(ds[0])
+```
 
 ## About ArGiMi
 
