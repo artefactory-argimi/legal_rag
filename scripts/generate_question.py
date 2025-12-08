@@ -11,8 +11,9 @@
 
 from __future__ import annotations
 
-import os
 import re
+import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -21,7 +22,7 @@ import dspy
 from absl import app, logging
 from datasets import load_dataset
 from etils import eapp, epath
-from tqdm.auto import tqdm
+from dspy.utils.exceptions import AdapterParseError
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class GenerationConfig:
     id_column: str = "id"
     sample_limit: int | None = None
     seed: int | None = 0
-    api_key: str | None = None
+    api_key: str = "local"
     api_base: str = "http://localhost:8000/v1"
     model: str = "local"
     temperature: float = 0.2
@@ -41,31 +42,87 @@ class GenerationConfig:
     output_dir: epath.Path = epath.Path("./artifacts/question_answers")
     overwrite: bool = False
     max_context_chars: int = 8000
+    num_threads: int = 4
+    log_every: int = 20
+
+
+class SummarizeAndExtractTopic(dspy.Signature):
+    """Résume le texte juridique et identifie le sujet principal."""
+
+    context: str = dspy.InputField(desc="Texte d'une décision juridique en français")
+    summary: str = dspy.OutputField(
+        desc="Résumé concis du texte en 2-3 phrases, en français uniquement"
+    )
+    main_topic: str = dspy.OutputField(
+        desc="Le sujet principal du texte en quelques mots, en français uniquement"
+    )
 
 
 class QAWithSpan(dspy.Signature):
-    """Lis le texte, propose une question et donne une réponse exacte tirée du texte."""
+    """Génère une question courte en français avec une réponse exacte tirée du texte."""
 
-    context: str = dspy.InputField()
-    question: str = dspy.OutputField()
-    answer: str = dspy.OutputField()
+    summary: str = dspy.InputField(desc="Résumé du texte juridique")
+    main_topic: str = dspy.InputField(desc="Sujet principal du texte")
+    context: str = dspy.InputField(desc="Texte source pour extraire la réponse")
+    question: str = dspy.OutputField(
+        desc="Question courte et précise en français (max 15 mots), portant sur le sujet principal"
+    )
+    answer: str = dspy.OutputField(
+        desc="Réponse courte (max 10 mots) citée EXACTEMENT du texte, en français"
+    )
+
+
+class ValidateFrench(dspy.Signature):
+    """Vérifie que le texte est en français."""
+
+    text: str = dspy.InputField(desc="Texte à valider")
+    is_french: bool = dspy.OutputField(
+        desc="True si le texte est en français, False sinon"
+    )
 
 
 class QAAgent(dspy.Module):
-    """Simple DSPy agent that asks one grounded question per context."""
+    """Multi-step DSPy agent: summarize, extract topic, then generate one grounded Q&A."""
 
     def __init__(self) -> None:
         super().__init__()
-        instructions = (
-            "Lis le texte d'une décision juridique. Génère UNE question concise en français "
-            "qui est répondable par ce texte (même langue que le texte). "
-            "Donne une réponse exacte citée du texte (sans reformulation) pour permettre l'extraction d'un span. "
-            "Vérifie que la question est bien répondable par le texte et que ta réponse est exactement présente dans le texte."
+        summarize_instructions = (
+            "Lis attentivement ce texte juridique français. "
+            "Produis un résumé concis (2-3 phrases) et identifie le sujet principal. "
+            "IMPORTANT: Réponds UNIQUEMENT en français. "
+            "Ne mélange JAMAIS le français avec d'autres langues."
         )
-        self.predictor = dspy.ChainOfThought(QAWithSpan, instructions=instructions)
+        qa_instructions = (
+            "À partir du résumé et du sujet principal, génère UNE question courte en français "
+            "(maximum 15 mots) portant sur le sujet principal. "
+            "La réponse doit être une citation EXACTE du texte source (maximum 10 mots). "
+            "IMPORTANT: Question et réponse UNIQUEMENT en français. "
+            "Ne mélange JAMAIS le français avec d'autres langues (pas d'anglais, pas de mots étrangers). "
+            "Vérifie que ta réponse est exactement présente dans le texte."
+        )
+        self.summarizer = dspy.ChainOfThought(
+            SummarizeAndExtractTopic, instructions=summarize_instructions
+        )
+        self.qa_generator = dspy.ChainOfThought(
+            QAWithSpan, instructions=qa_instructions
+        )
+        self.language_validator = dspy.Predict(ValidateFrench)
 
     def forward(self, context: str) -> dspy.Prediction:
-        return self.predictor(context=context)
+        summary_pred = self.summarizer(context=context)
+        qa_pred = self.qa_generator(
+            summary=summary_pred.summary,
+            main_topic=summary_pred.main_topic,
+            context=context,
+        )
+        combined_text = f"{qa_pred.question} {qa_pred.answer}"
+        validation = self.language_validator(text=combined_text)
+        return dspy.Prediction(
+            question=qa_pred.question,
+            answer=qa_pred.answer,
+            main_topic=summary_pred.main_topic,
+            is_french=validation.is_french,
+        )
 
 
 def find_span(context: str, answer: str) -> tuple[int | None, int | None]:
@@ -88,6 +145,124 @@ def trim_context(text: str, max_chars: int) -> tuple[str, bool]:
     return snippet, True
 
 
+class RowProcessor:
+    """Callable wrapper for processing a single row with dspy.Parallel."""
+
+    def __init__(
+        self,
+        agent: QAAgent,
+        text_column: str,
+        id_column: str,
+        max_context_chars: int,
+    ) -> None:
+        self.agent = agent
+        self.text_column = text_column
+        self.id_column = id_column
+        self.max_context_chars = max_context_chars
+
+    def __call__(self, row: dict, idx: int) -> dict | None:
+        """Process a single row and return a record or None if failed."""
+        try:
+            context = (row.get(self.text_column) or "").strip()
+            doc_id = str(row.get(self.id_column) or idx)
+            if not context:
+                logging.warning("Skipping doc_id %s because context is empty.", doc_id)
+                return None
+
+            context_excerpt, _ = trim_context(context, self.max_context_chars)
+            try:
+                pred = self.agent(context=context_excerpt)
+            except AdapterParseError as e:
+                logging.warning(
+                    "Skipping doc_id %s due to adapter parse error: %s", doc_id, e
+                )
+                return None
+            except Exception as e:  # noqa: BLE001
+                logging.warning("Skipping doc_id %s due to DSPy error: %s", doc_id, e)
+                return None
+
+            question = (pred.question or "").strip()
+            answer = (pred.answer or "").strip()
+            main_topic = (getattr(pred, "main_topic", "") or "").strip()
+            is_french = getattr(pred, "is_french", True)
+
+            if not question or not answer:
+                logging.warning(
+                    "Skipping doc_id %s because question/answer is empty.", doc_id
+                )
+                return None
+
+            if not is_french:
+                logging.warning(
+                    "Skipping doc_id %s because Q&A is not in French: "
+                    "question=%s, answer=%s",
+                    doc_id,
+                    question,
+                    answer,
+                )
+                return None
+
+            span_start, span_end = find_span(context_excerpt, answer)
+            if answer and span_start is None:
+                try:
+                    retry_context = (
+                        context_excerpt
+                        + "\n\nIMPORTANT: La réponse doit être une citation EXACTE "
+                        "du texte ci-dessus (max 10 mots), en français."
+                    )
+                    follow_up = self.agent(context=retry_context)
+                    answer = (follow_up.answer or answer).strip()
+                    main_topic = (
+                        getattr(follow_up, "main_topic", "") or main_topic
+                    ).strip()
+                    is_french = getattr(follow_up, "is_french", True)
+                    if not is_french:
+                        logging.warning(
+                            "Skipping doc_id %s because retry Q&A is not in French: "
+                            "answer=%s",
+                            doc_id,
+                            answer,
+                        )
+                        return None
+                    span_start, span_end = find_span(context_excerpt, answer)
+                except Exception as e:  # noqa: BLE001
+                    logging.warning(
+                        "Skipping doc_id %s due to DSPy retry failure: %s", doc_id, e
+                    )
+                    return None
+
+            if span_start is None or span_end is None:
+                logging.warning(
+                    "Skipping doc_id %s because answer span not found in context.",
+                    doc_id,
+                )
+                return None
+
+            return (
+                str(uuid.uuid4()),
+                doc_id,
+                question,
+                answer,
+                span_start,
+                span_end,
+                main_topic,
+            )
+        except Exception as e:  # noqa: BLE001
+            logging.warning("Skipping row %s due to unexpected error: %s", idx, e)
+            return None
+
+
+RECORD_FIELDS = (
+    "id",
+    "doc_id",
+    "question",
+    "answer",
+    "answer_span_start",
+    "answer_span_end",
+    "main_topic",
+)
+
+
 def build_qa_records(
     agent: QAAgent,
     rows: Iterable[dict],
@@ -95,91 +270,42 @@ def build_qa_records(
     text_column: str,
     id_column: str,
     max_context_chars: int,
+    num_threads: int = 4,
     max_records: int | None = None,
     log_every: int = 20,
-) -> list[dict]:
-    records: list[dict] = []
-    total = None
-    try:
-        total = len(rows)  # type: ignore[arg-type]
-    except Exception:
-        total = None
+) -> list[tuple]:
+    """Build QA records from rows using parallel execution."""
+    rows_list = list(rows)
+    if max_records is not None and max_records > 0:
+        rows_list = rows_list[:max_records]
 
-    for idx, row in enumerate(tqdm(rows, total=total, desc="Generating QA")):
-        if max_records is not None and len(records) >= max_records:
-            break
-        context = (row.get(text_column) or "").strip()
-        doc_id = str(row.get(id_column) or idx)
-        if not context:
-            logging.warning("Skipping doc_id %s because context is empty.", doc_id)
-            continue
+    processor = RowProcessor(agent, text_column, id_column, max_context_chars)
+    parallel = dspy.Parallel(num_threads=num_threads)
 
-        context_excerpt, truncated = trim_context(context, max_context_chars)
-        pred = agent(context=context_excerpt)
+    exec_pairs = [(processor, (row, idx)) for idx, row in enumerate(rows_list)]
+    results = parallel(exec_pairs)
 
-        question = (pred.question or "").strip()
-        answer = (pred.answer or "").strip()
-
-        if not question or not answer:
-            logging.warning(
-                "Skipping doc_id %s because question/answer is empty.", doc_id
-            )
-            continue
-
-        # Heuristic language guard: if context is non-ASCII but question is pure ASCII, skip.
-        context_has_non_ascii = any(ord(c) > 127 for c in context_excerpt)
-        question_has_non_ascii = any(ord(c) > 127 for c in question)
-        if context_has_non_ascii and not question_has_non_ascii:
-            logging.warning(
-                "Skipping doc_id %s because question does not match context language (expected non-ASCII).",
-                doc_id,
-            )
-            continue
-
-        # Self-check: if span not found, ask once more with a stricter prompt.
-        span_start, span_end = find_span(context_excerpt, answer)
-        if answer and span_start is None:
-            follow_up = agent(
-                context=context_excerpt
-                + "\n\nRéponds en citant exactement une séquence de mots du texte."
-            )
-            answer = (follow_up.answer or answer).strip()
-            span_start, span_end = find_span(context_excerpt, answer)
-
-        if span_start is None or span_end is None:
-            logging.warning(
-                "Skipping doc_id %s because answer span not found in context.", doc_id
-            )
-            continue
-
-        records.append(
-            {
-                "id": f"{doc_id}-qa",
-                "doc_id": doc_id,
-                "question": question,
-                "answer": answer,
-                "answer_span_start": span_start,
-                "answer_span_end": span_end,
-                "context_excerpt": context_excerpt,
-                "context_was_truncated": truncated,
-                "context_length": len(context),
-            }
-        )
-        if total:
-            percent = (idx + 1) * 100 // total
-            if percent and percent % max(log_every, 1) == 0:
+    records: deque[tuple] = deque()
+    for result in results:
+        if result is not None:
+            records.append(result)
+            if log_every > 0 and len(records) % log_every == 0:
+                _, doc_id, question, answer, _, _, main_topic = result
                 logging.info(
-                    "Progress %d%% — doc_id=%s | question=%s | answer=%s",
-                    percent,
+                    "Progress: %d records | doc_id=%s | topic=%s | Q=%s | A=%s",
+                    len(records),
                     doc_id,
+                    main_topic,
                     question,
                     answer,
                 )
-    return records
+
+    logging.info("Generated %d records from %d rows", len(records), len(rows_list))
+    return list(records)
 
 
 def save_dataset(
-    records: list[dict], output_dir: epath.Path, overwrite: bool
+    records: list[tuple], output_dir: epath.Path, overwrite: bool
 ) -> datasets.Dataset:
     output_dir = output_dir.expanduser()
     if output_dir.exists() and not overwrite:
@@ -190,9 +316,10 @@ def save_dataset(
         output_dir.rmtree()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    records_as_dicts = [dict(zip(RECORD_FIELDS, record)) for record in records]
     ds = (
-        datasets.Dataset.from_list(records)
-        if records
+        datasets.Dataset.from_list(records_as_dicts)
+        if records_as_dicts
         else datasets.Dataset.from_dict({"id": []})
     )
     ds.save_to_disk(str(output_dir))
@@ -212,11 +339,10 @@ def main(cfg: GenerationConfig) -> None:
     if cfg.sample_limit is not None and cfg.sample_limit > 0:
         ds = ds.select(range(min(cfg.sample_limit, len(ds))))
 
-    api_key = cfg.api_key or os.environ.get("OPENAI_API_KEY") or "local"
     lm = dspy.LM(
         f"openai/{cfg.model}",
         api_base=cfg.api_base.rstrip("/"),
-        api_key=api_key,
+        api_key=cfg.api_key,
         model_type="chat",
         max_tokens=cfg.max_tokens,
         temperature=cfg.temperature,
@@ -230,8 +356,9 @@ def main(cfg: GenerationConfig) -> None:
         text_column=cfg.text_column,
         id_column=cfg.id_column,
         max_context_chars=cfg.max_context_chars,
+        num_threads=cfg.num_threads,
         max_records=cfg.sample_limit,
-        log_every=20,
+        log_every=cfg.log_every,
     )
 
     ds_out = save_dataset(records, cfg.output_dir, cfg.overwrite)
@@ -243,12 +370,11 @@ def main(cfg: GenerationConfig) -> None:
     if len(ds_out):
         sample = ds_out[0]
         logging.info(
-            "Sample -> doc_id: %s | question: %s | answer: %s | span: (%s, %s)",
+            "Sample -> doc_id: %s | topic: %s | question: %s | answer: %s",
             sample["doc_id"],
+            sample["main_topic"],
             sample["question"],
             sample["answer"],
-            sample["answer_span_start"],
-            sample["answer_span_end"],
         )
 
 
