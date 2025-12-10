@@ -1,0 +1,92 @@
+# Legal RAG Evaluation Pipeline
+#
+# This pipeline builds the PLAID index, queries it with generated questions,
+# and evaluates retrieval quality using pyserini.
+#
+# Usage:
+#   task-tracker submit pipelines/legal_rag_evaluation.yaml
+
+name: legal_rag_evaluation
+description: Build PLAID index, batch query with generated questions, and evaluate with pyserini
+version: "2.0"
+
+project: legal-rag
+experiment: colbert_juri_baseline
+
+defaults:
+  base_dir: /data/workspace/${USER}
+
+  # Dataset configuration
+  dataset: artefactory/Argimi-Legal-French-Jurisprudence
+  subset: juri
+  split: train
+
+  # Model configuration
+  encoder_model: maastrichtlawtech/colbert-legal-french
+
+  # Index configuration
+  index_name: legal_french_index
+  batch_size: 32768
+
+  # Query configuration
+  k: 100
+  query_batch_size: 32
+
+  # Paths
+  index_dir: ${base_dir}/legal-rag/index
+  questions_dir: /data/workspace/hrandrianarivo/artefact_legal_constit_questions
+  output_dir: ${base_dir}/legal-rag/evaluation
+
+steps:
+  # Step 0: Build PLAID index
+  - command: "python scripts/indexer.py"
+    arguments:
+      model: "${encoder_model}"
+      dataset: "${dataset}"
+      subset: "${subset}"
+      split: "${split}"
+      batch_size: ${batch_size}
+      index_folder: "${index_dir}"
+    gpu_count: 1
+    artifacts:
+      inputs:
+        - path: "${dataset}"
+          type: Dataset
+      outputs:
+        - path: "${index_dir}/${index_name}"
+          type: Dataset
+
+  # Step 1: Batch query the index
+  - command: "python scripts/batch_query.py"
+    arguments:
+      questions: "${questions_dir}"
+      output: "${output_dir}"
+      index.path: "${index_dir}"
+      index.name: "${index_name}"
+      index.encoder: "${encoder_model}"
+      k: ${k}
+      batch_size: ${query_batch_size}
+    gpu_count: 1
+    artifacts:
+      inputs:
+        - path: "${index_dir}/${index_name}"
+          type: Dataset
+        - path: "${questions_dir}"
+          type: Dataset
+      outputs:
+        - path: "${output_dir}/run.txt"
+          type: Dataset
+        - path: "${output_dir}/qrels.txt"
+          type: Dataset
+
+  # Step 2: Evaluate with pyserini
+  - command: "python -m pyserini.eval.trec_eval -c -m recall.1,5,10,100 ${output_dir}/qrels.txt ${output_dir}/run.txt"
+    artifacts:
+      inputs:
+        - path: "${output_dir}/run.txt"
+          type: Dataset
+        - path: "${output_dir}/qrels.txt"
+          type: Dataset
+      outputs:
+        - path: "${output_dir}/metrics.txt"
+          type: Metrics

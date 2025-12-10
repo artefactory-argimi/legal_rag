@@ -1,6 +1,5 @@
 """DSPy-based ReAct agent wiring for the Legal RAG demo (new dspy API)."""
 
-import json
 from functools import partial
 from pathlib import Path
 
@@ -9,7 +8,7 @@ from datasets import load_dataset
 from etils import epath
 
 from legal_rag.retriever import build_encoder, build_retriever
-from legal_rag.tools import lookup_legal_doc, search_legal_docs
+from legal_rag.tools import DEFAULT_DOC_ID_COLUMN, lookup_legal_doc, search_legal_docs
 
 # Defaults aligned with the design doc; adjust via function arguments as needed.
 DEFAULT_GENERATOR_MODEL = "mistralai/Magistral-Small-2509"
@@ -140,7 +139,7 @@ def build_agent(
     temperature: float = DEFAULT_TEMPERATURE,
     instructions: str = DEFAULT_INSTRUCTIONS,
     max_iters: int = 4,
-    ) -> LegalReActAgent:
+) -> LegalReActAgent:
     """Factory that wires LM, retrieval, and ReAct agent."""
     lm = build_language_model(
         student_model=student_model,
@@ -157,36 +156,12 @@ def build_agent(
         index_folder=resolved_index_folder,
         index_name=index_name,
     )
-    mapping_path = resolved_index_folder / "doc_mapping.json"
-    if not mapping_path.exists():
-        raise FileNotFoundError(f"doc_mapping.json not found under {resolved_index_folder}")
-    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-
-    if isinstance(mapping, dict) and "entries" in mapping:
-        entries = mapping.get("entries") or {}
-        dataset_name = mapping.get("dataset")
-        split = mapping.get("split")
-        config = mapping.get("config")
-    elif isinstance(mapping, dict):
-        # Legacy mapping where the file itself is plaid_id -> dataset_idx.
-        entries = mapping
-        dataset_name = None
-        split = None
-        config = None
-    else:
-        raise ValueError(f"Unrecognized doc_mapping.json structure in {mapping_path}")
-
-    if not isinstance(entries, dict) or not entries:
-        raise ValueError("doc_mapping.json contains no entries; re-run indexer.")
-    dataset_name = dataset_name or DEFAULT_DATASET
-    split = split or DEFAULT_SPLIT
-    config = config or DEFAULT_CONFIG
-    dataset = load_dataset(dataset_name, config, split=split)
+    dataset = load_dataset(DEFAULT_DATASET, DEFAULT_CONFIG, split=DEFAULT_SPLIT)
 
     lookup_tool = partial(
         lookup_legal_doc,
-        mapping_entries=entries,
         dataset=dataset,
+        doc_id_column=DEFAULT_DOC_ID_COLUMN,
     )
     lookup_tool.__name__ = "lookup_legal_doc"
     search_tool = partial(

@@ -75,7 +75,7 @@ MAX_NEW_TOKENS = 512  # @param {type:"integer"}
 TEMPERATURE = 0.2  # @param {type:"number"}
 MAX_ITERS = 4  # @param {type:"integer"}
 INSTRUCTIONS = """Tu es un agent RAG spécialisé en jurisprudence constitutionnelle française (sous-ensemble 'constit' du jeu artefactory/Argimi-Legal-French-Jurisprudence).
-Flow obligatoire des outils: (1) appelle search_legal_docs(query="…", k=10) puis (2) appelle lookup_legal_doc(doc_id="…", score=…) sur les résultats renvoyés dès qu'au moins un score est suffisant. N'emploie jamais de clés args/kwargs ni d'autres paramètres, uniquement query/k ou doc_id/score. Exemples exacts: search_legal_docs(query="résiliation contrat imprévision", k=5) puis lookup_legal_doc(doc_id="2491", score=4.91). Toujours réutiliser tel quel le doc_id (string) et le score renvoyés par search_legal_docs.
+Flow obligatoire des outils: (1) appelle search_legal_docs(query="…", k=10) puis (2) appelle lookup_legal_doc(chunk_id="…", score=…) sur les résultats renvoyés dès qu'au moins un score est suffisant. N'emploie jamais de clés args/kwargs ni d'autres paramètres, uniquement query/k ou chunk_id/score. Exemples exacts: search_legal_docs(query="résiliation contrat imprévision", k=5) puis lookup_legal_doc(chunk_id="JURITEXT000007022836-0", score=4.91). Les IDs retournés par search_legal_docs sont des chunk IDs au format "docid-chunkidx" (ex: "JURITEXT000007022836-0"). Toujours réutiliser tel quel le chunk_id (string) et le score renvoyés par search_legal_docs.
 Pour chaque requête, formule un libellé de recherche précis: inclure le nom de la partie principale, la date (ou l'année) de la décision, la formation « Conseil constitutionnel », la nature de la question (QPC, contrôle a priori), les articles ou notions clés (ex. extradition, écrou, liberté individuelle), et un verbe d'action (contester, encadrer, garantir). Évite les formulations vagues; préfère les combinaisons de termes factuels et juridiques.
 Périmètre: toute question mentionnant le Conseil constitutionnel, une QPC, la Constitution ou un article 61/61-1 est automatiquement considérée dans le périmètre: appelle search_legal_docs puis lookup_legal_doc. Ne renvoie jamais le message hors périmètre dans ces cas.
 Hors périmètre: uniquement pour les sujets manifestement sans lien (ex. agriculture, technique, autres branches du droit). Dans ce seul cas, n'appelle aucun outil et répond strictement: "Le domaine demandé n'est pas couvert par cet agent (jurisprudence constitutionnelle française uniquement)."
@@ -189,7 +189,9 @@ os.environ.setdefault("HF_HUB_TIMEOUT", "60")
 from legal_rag.agent import build_agent
 
 generator_api_key = GENERATOR_API_KEY or None
-generator_api_base = (GENERATOR_API_BASE or "https://router.huggingface.co/v1").rstrip("/")
+generator_api_base = (GENERATOR_API_BASE or "https://router.huggingface.co/v1").rstrip(
+    "/"
+)
 clean_model_id = GENERATOR_MODEL_ID
 
 agent = build_agent(

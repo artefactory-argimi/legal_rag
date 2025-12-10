@@ -24,6 +24,8 @@ from datasets import load_dataset
 from etils import eapp, epath
 from dspy.utils.exceptions import AdapterParseError
 
+from legal_rag.tools import DEFAULT_DOC_ID_COLUMN
+
 
 @dataclass(frozen=True)
 class GenerationConfig:
@@ -31,7 +33,7 @@ class GenerationConfig:
     config: str | None = None
     split: str = "train"
     text_column: str = "content"
-    id_column: str = "id"
+    doc_id_column: str = DEFAULT_DOC_ID_COLUMN
     sample_limit: int | None = None
     seed: int | None = 0
     api_key: str = "local"
@@ -152,19 +154,19 @@ class RowProcessor:
         self,
         agent: QAAgent,
         text_column: str,
-        id_column: str,
+        doc_id_column: str,
         max_context_chars: int,
     ) -> None:
         self.agent = agent
         self.text_column = text_column
-        self.id_column = id_column
+        self.doc_id_column = doc_id_column
         self.max_context_chars = max_context_chars
 
     def __call__(self, row: dict, idx: int) -> dict | None:
         """Process a single row and return a record or None if failed."""
         try:
-            context = (row.get(self.text_column) or "").strip()
-            doc_id = str(row.get(self.id_column) or idx)
+            context = (row[self.text_column] or "").strip()
+            doc_id = str(row[self.doc_id_column])
             if not context:
                 logging.warning("Skipping doc_id %s because context is empty.", doc_id)
                 return None
@@ -268,7 +270,7 @@ def build_qa_records(
     rows: Iterable[dict],
     *,
     text_column: str,
-    id_column: str,
+    doc_id_column: str,
     max_context_chars: int,
     num_threads: int = 4,
     max_records: int | None = None,
@@ -279,7 +281,7 @@ def build_qa_records(
     if max_records is not None and max_records > 0:
         rows_list = rows_list[:max_records]
 
-    processor = RowProcessor(agent, text_column, id_column, max_context_chars)
+    processor = RowProcessor(agent, text_column, doc_id_column, max_context_chars)
     parallel = dspy.Parallel(num_threads=num_threads)
 
     exec_pairs = [(processor, (row, idx)) for idx, row in enumerate(rows_list)]
@@ -354,7 +356,7 @@ def main(cfg: GenerationConfig) -> None:
         agent,
         ds,
         text_column=cfg.text_column,
-        id_column=cfg.id_column,
+        doc_id_column=cfg.doc_id_column,
         max_context_chars=cfg.max_context_chars,
         num_threads=cfg.num_threads,
         max_records=cfg.sample_limit,
