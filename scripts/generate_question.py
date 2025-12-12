@@ -48,12 +48,21 @@ class GenerationConfig:
     log_every: int = 20
 
 
-class SummarizeAndExtractTopic(dspy.Signature):
-    """Résume le texte juridique et identifie le sujet principal."""
+class ExtractFacts(dspy.Signature):
+    """Extrait trois faits clés et vérifiables d'un texte juridique."""
 
     context: str = dspy.InputField(desc="Texte d'une décision juridique en français")
-    summary: str = dspy.OutputField(
-        desc="Résumé concis du texte en 2-3 phrases, en français uniquement"
+    fact_1: str = dspy.OutputField(
+        desc="Premier fait clé: une information factuelle courte (max 15 mots), "
+        "citée ou paraphrasée du texte, en français"
+    )
+    fact_2: str = dspy.OutputField(
+        desc="Deuxième fait clé: une information factuelle courte (max 15 mots), "
+        "citée ou paraphrasée du texte, en français"
+    )
+    fact_3: str = dspy.OutputField(
+        desc="Troisième fait clé: une information factuelle courte (max 15 mots), "
+        "citée ou paraphrasée du texte, en français"
     )
     main_topic: str = dspy.OutputField(
         desc="Le sujet principal du texte en quelques mots, en français uniquement"
@@ -61,16 +70,18 @@ class SummarizeAndExtractTopic(dspy.Signature):
 
 
 class QAWithSpan(dspy.Signature):
-    """Génère une question courte en français avec une réponse exacte tirée du texte."""
+    """Génère une question courte dont la réponse est l'un des faits fournis."""
 
-    summary: str = dspy.InputField(desc="Résumé du texte juridique")
-    main_topic: str = dspy.InputField(desc="Sujet principal du texte")
-    context: str = dspy.InputField(desc="Texte source pour extraire la réponse")
+    facts: str = dspy.InputField(
+        desc="Liste de 3 faits extraits du texte, séparés par des numéros"
+    )
+    context: str = dspy.InputField(desc="Texte source pour vérifier la réponse")
     question: str = dspy.OutputField(
-        desc="Question courte et précise en français (max 15 mots), portant sur le sujet principal"
+        desc="Question courte et simple en français (max 12 mots) dont la réponse "
+        "est l'un des faits. La question doit être formulée pour un moteur de recherche."
     )
     answer: str = dspy.OutputField(
-        desc="Réponse courte (max 10 mots) citée EXACTEMENT du texte, en français"
+        desc="L'un des 3 faits fournis, recopié exactement comme réponse"
     )
 
 
@@ -84,26 +95,26 @@ class ValidateFrench(dspy.Signature):
 
 
 class QAAgent(dspy.Module):
-    """Multi-step DSPy agent: summarize, extract topic, then generate one grounded Q&A."""
+    """Multi-step DSPy agent: extract facts, then generate one Q&A based on a fact."""
 
     def __init__(self) -> None:
         super().__init__()
-        summarize_instructions = (
+        extract_instructions = (
             "Lis attentivement ce texte juridique français. "
-            "Produis un résumé concis (2-3 phrases) et identifie le sujet principal. "
-            "IMPORTANT: Réponds UNIQUEMENT en français. "
-            "Ne mélange JAMAIS le français avec d'autres langues."
+            "Extrait 3 faits clés, vérifiables et distincts du texte. "
+            "Chaque fait doit être une information factuelle courte (max 15 mots). "
+            "Exemples de faits: dates, montants, noms de parties, décisions, lieux. "
+            "IMPORTANT: Réponds UNIQUEMENT en français."
         )
         qa_instructions = (
-            "À partir du résumé et du sujet principal, génère UNE question courte en français "
-            "(maximum 15 mots) portant sur le sujet principal. "
-            "La réponse doit être une citation EXACTE du texte source (maximum 10 mots). "
-            "IMPORTANT: Question et réponse UNIQUEMENT en français. "
-            "Ne mélange JAMAIS le français avec d'autres langues (pas d'anglais, pas de mots étrangers). "
-            "Vérifie que ta réponse est exactement présente dans le texte."
+            "À partir des 3 faits fournis, génère UNE question simple en français "
+            "(maximum 12 mots) dont la réponse est exactement l'un des faits. "
+            "La question doit être naturelle, comme si elle était posée à un moteur de recherche. "
+            "IMPORTANT: La réponse doit être l'un des 3 faits, recopié exactement. "
+            "Question et réponse UNIQUEMENT en français."
         )
-        self.summarizer = dspy.ChainOfThought(
-            SummarizeAndExtractTopic, instructions=summarize_instructions
+        self.fact_extractor = dspy.ChainOfThought(
+            ExtractFacts, instructions=extract_instructions
         )
         self.qa_generator = dspy.ChainOfThought(
             QAWithSpan, instructions=qa_instructions
@@ -111,10 +122,12 @@ class QAAgent(dspy.Module):
         self.language_validator = dspy.Predict(ValidateFrench)
 
     def forward(self, context: str) -> dspy.Prediction:
-        summary_pred = self.summarizer(context=context)
+        facts_pred = self.fact_extractor(context=context)
+        facts_list = (
+            f"1. {facts_pred.fact_1}\n2. {facts_pred.fact_2}\n3. {facts_pred.fact_3}"
+        )
         qa_pred = self.qa_generator(
-            summary=summary_pred.summary,
-            main_topic=summary_pred.main_topic,
+            facts=facts_list,
             context=context,
         )
         combined_text = f"{qa_pred.question} {qa_pred.answer}"
@@ -122,7 +135,8 @@ class QAAgent(dspy.Module):
         return dspy.Prediction(
             question=qa_pred.question,
             answer=qa_pred.answer,
-            main_topic=summary_pred.main_topic,
+            main_topic=facts_pred.main_topic,
+            facts=[facts_pred.fact_1, facts_pred.fact_2, facts_pred.fact_3],
             is_french=validation.is_french,
         )
 
@@ -240,6 +254,8 @@ class RowProcessor:
                 )
                 return None
 
+            facts = getattr(pred, "facts", [])
+
             return (
                 str(uuid.uuid4()),
                 doc_id,
@@ -248,6 +264,7 @@ class RowProcessor:
                 span_start,
                 span_end,
                 main_topic,
+                facts,
             )
         except Exception as e:  # noqa: BLE001
             logging.warning("Skipping row %s due to unexpected error: %s", idx, e)
@@ -262,6 +279,7 @@ RECORD_FIELDS = (
     "answer_span_start",
     "answer_span_end",
     "main_topic",
+    "facts",
 )
 
 
@@ -292,14 +310,15 @@ def build_qa_records(
         if result is not None:
             records.append(result)
             if log_every > 0 and len(records) % log_every == 0:
-                _, doc_id, question, answer, _, _, main_topic = result
+                _, doc_id, question, answer, _, _, main_topic, facts = result
                 logging.info(
-                    "Progress: %d records | doc_id=%s | topic=%s | Q=%s | A=%s",
+                    "Progress: %d records | doc_id=%s | topic=%s | Q=%s | A=%s | facts=%s",
                     len(records),
                     doc_id,
                     main_topic,
                     question,
                     answer,
+                    facts[:2] if facts else [],
                 )
 
     logging.info("Generated %d records from %d rows", len(records), len(rows_list))
@@ -372,11 +391,12 @@ def main(cfg: GenerationConfig) -> None:
     if len(ds_out):
         sample = ds_out[0]
         logging.info(
-            "Sample -> doc_id: %s | topic: %s | question: %s | answer: %s",
+            "Sample -> doc_id: %s | topic: %s | question: %s | answer: %s | facts: %s",
             sample["doc_id"],
             sample["main_topic"],
             sample["question"],
             sample["answer"],
+            sample.get("facts", []),
         )
 
 
