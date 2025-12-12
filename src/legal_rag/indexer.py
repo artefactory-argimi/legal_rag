@@ -37,6 +37,7 @@ class ScriptConfig:
         None  # docs to accumulate before encoding (defaults to batch_size)
     )
     index_folder: epath.Path = epath.Path("./index")
+    index_name: str = "legal_french_index"
     doc_id_column: str = DEFAULT_DOC_ID_COLUMN
     device: str | None = None  # device for model ("cuda", "cpu", None for auto)
     # PLAID index configuration
@@ -49,6 +50,8 @@ class ScriptConfig:
     # For SentenceChunker: tokenizer name (e.g., "gpt2", "character")
     # For SemanticChunker: embedding model (e.g., "minishlab/potion-base-32M")
     chunk_tokenizer: str = "minishlab/potion-base-32M"
+    # Force re-indexing even if output already exists (default: skip if exists)
+    force: bool = False
 
 
 FIRST_CHUNK_HEADER = """Titre: {title} | Date: {decision_date}
@@ -120,6 +123,32 @@ def preprocess(sample, doc_id_column: str = DEFAULT_DOC_ID_COLUMN):
 
 def build_index(cfg: ScriptConfig):
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    logging.info("Indexer configuration:")
+    logging.info("  model: %s", cfg.model)
+    logging.info("  dataset: %s", cfg.dataset)
+    logging.info("  subset: %s", cfg.subset)
+    logging.info("  split: %s", cfg.split)
+    logging.info("  index_folder: %s", cfg.index_folder)
+    logging.info("  index_name: %s", cfg.index_name)
+    logging.info("  batch_size: %d", cfg.batch_size)
+    logging.info("  accumulation_size: %s", cfg.accumulation_size)
+    logging.info("  doc_id_column: %s", cfg.doc_id_column)
+    logging.info("  nbits: %d", cfg.nbits)
+    logging.info("  pool_factor: %d (1 = no pooling)", cfg.pool_factor)
+    logging.info("  chunk_size: %d", cfg.chunk_size)
+    logging.info("  chunker_type: %s", cfg.chunker_type)
+    logging.info("  force: %s", cfg.force)
+
+    index_path = epath.Path(cfg.index_folder) / cfg.index_name
+    if index_path.exists() and not cfg.force:
+        logging.info(
+            "Index already exists at %s, skipping (use --force to rebuild)",
+            index_path,
+        )
+        print(f"\n⏭ Index already exists at {index_path}, skipping.")
+        return
+
     logging.info(
         "Building PLAID index: encoder=%s dataset=%s slice=%s output=%s",
         cfg.model,
@@ -142,46 +171,11 @@ def build_index(cfg: ScriptConfig):
     logging.info("Model loaded and embeddings fixed")
 
     index = indexes.PLAID(
-        cfg.index_folder,
-        index_name="legal_french_index",
+        str(cfg.index_folder),
+        index_name=cfg.index_name,
         override=True,
         nbits=cfg.nbits,
     )
-    batch_doc_ids: list[str] = []
-    batch_docs: list[str] = []
-
-    def flush_batch() -> int:
-        if not batch_doc_ids:
-            return 0
-        logging.info(
-            "Encoding %d documents with batch_size=%d",
-            len(batch_docs),
-            cfg.batch_size,
-        )
-        embeddings = model.encode(
-            batch_docs,
-            is_query=False,
-            show_progress_bar=True,
-            batch_size=cfg.batch_size,
-            pool_factor=cfg.pool_factor,
-        )
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-                logging.info("Cleared CUDA cache before PLAID add_documents.")
-        except Exception:
-            pass
-        index.add_documents(
-            documents_ids=batch_doc_ids, documents_embeddings=embeddings
-        )
-        processed = len(batch_doc_ids)
-        logging.info("Indexed %d documents in this batch", processed)
-        batch_doc_ids.clear()
-        batch_docs.clear()
-        return processed
 
     if cfg.chunker_type == "semantic":
         chunker = SemanticChunker(
@@ -212,7 +206,6 @@ def build_index(cfg: ScriptConfig):
             cfg.chunk_tokenizer,
         )
 
-    total = 0
     logging.info("Loading dataset config=%s split=%s", config_name, split_name)
     hf_ds = load_dataset(cfg.dataset, config_name, split=split_name)
     base_ds = grain.MapDataset.source(hf_ds)
@@ -221,26 +214,71 @@ def build_index(cfg: ScriptConfig):
     ds = base_ds.map(
         partial(preprocess, doc_id_column=cfg.doc_id_column)
     ).to_iter_dataset()
-    for item in iter(ds):
-        doc_id = str(item["doc_id"])
-        content = item["content"]
-        title = item["title"]
-        decision_date = item["decision_date"]
 
-        doc_chunks = chunk_document(
-            content=content,
-            doc_id=doc_id,
-            title=title,
-            decision_date=decision_date,
-            chunker=chunker,
+    def generate_chunks():
+        """Yield (chunk_id, chunk_text) pairs from all documents."""
+        for item in ds:
+            yield from chunk_document(
+                content=item["content"],
+                doc_id=str(item["doc_id"]),
+                title=item["title"],
+                decision_date=item["decision_date"],
+                chunker=chunker,
+            )
+
+    def encode_and_index_batch(doc_ids: list[str], docs: list[str]) -> int:
+        """Encode documents and add them to the index.
+
+        Args:
+            doc_ids: List of document IDs.
+            docs: List of document texts.
+
+        Returns:
+            Number of documents indexed.
+        """
+        if not doc_ids:
+            return 0
+
+        logging.info(
+            "Encoding %d documents with batch_size=%d", len(docs), cfg.batch_size
         )
-        for chunk_id, chunk_text in doc_chunks:
-            batch_doc_ids.append(chunk_id)
-            batch_docs.append(chunk_text)
-            accumulation_size = cfg.accumulation_size or cfg.batch_size
-            if len(batch_doc_ids) >= accumulation_size:
-                total += flush_batch()
-    total += flush_batch()
+        embeddings = model.encode(
+            docs,
+            is_query=False,
+            show_progress_bar=True,
+            batch_size=cfg.batch_size,
+            pool_factor=cfg.pool_factor,
+        )
+
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+                logging.info("Cleared CUDA cache before PLAID add_documents.")
+        except Exception:
+            pass
+
+        index.add_documents(documents_ids=doc_ids, documents_embeddings=embeddings)
+        logging.info("Indexed %d documents in this batch", len(doc_ids))
+        return len(doc_ids)
+
+    accumulation_size = cfg.accumulation_size or cfg.batch_size
+    batch_ids: list[str] = []
+    batch_texts: list[str] = []
+    total = 0
+
+    for chunk_id, chunk_text in generate_chunks():
+        batch_ids.append(chunk_id)
+        batch_texts.append(chunk_text)
+        if len(batch_ids) >= accumulation_size:
+            total += encode_and_index_batch(batch_ids, batch_texts)
+            batch_ids = []
+            batch_texts = []
+
+    # Process remaining documents.
+    total += encode_and_index_batch(batch_ids, batch_texts)
 
     logging.info("Indexing complete (%d chunks), stored at %s", total, cfg.index_folder)
     print(f"\n✓ Index created successfully at {cfg.index_folder} ({total} documents)")

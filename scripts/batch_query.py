@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from absl import app, logging
-from datasets import load_from_disk
+from datasets import load_dataset, load_from_disk
 from etils import eapp, epath
 
 from legal_rag.retriever import build_encoder, build_retriever
@@ -49,23 +49,63 @@ class IndexConfig:
 
 
 @dataclass(frozen=True)
+class SourceDatasetConfig:
+    """Source dataset configuration for title lookup."""
+
+    name: str = "artefactory/Argimi-Legal-French-Jurisprudence"
+    subset: str = "juri"
+    split: str = "train"
+    doc_id_column: str = "id"
+    title_column: str = "title"
+
+
+@dataclass(frozen=True)
 class QueryConfig:
     """Batch query configuration."""
 
     questions: epath.Path
     output: epath.Path
     index: IndexConfig = IndexConfig()
+    source: SourceDatasetConfig = SourceDatasetConfig()
     k: int = 100
     batch_size: int = 32
+    force: bool = False
+    sample_interval: int = 100
 
 
 def run_batch_query(cfg: QueryConfig) -> None:
+    # Fail-fast checks before expensive operations.
+    output = cfg.output.expanduser()
+    run_file = output / "run.txt"
+    questions_path = cfg.questions.expanduser()
+
+    if not questions_path.exists():
+        raise FileNotFoundError(f"Questions dataset not found at {questions_path}")
+    if run_file.exists() and not cfg.force:
+        raise FileExistsError(
+            f"Run file already exists at {run_file}. Use --force to overwrite."
+        )
+
     logging.info("Loading questions from %s", cfg.questions)
-    questions_ds = load_from_disk(str(cfg.questions.expanduser()))
+    questions_ds = load_from_disk(str(questions_path))
     if len(questions_ds) == 0:
         raise ValueError("No questions found in the dataset.")
     num_queries = len(questions_ds)
     logging.info("Loaded %d questions", num_queries)
+
+    logging.info(
+        "Loading source dataset %s/%s for title lookup",
+        cfg.source.name,
+        cfg.source.subset,
+    )
+    source_ds = load_dataset(cfg.source.name, cfg.source.subset, split=cfg.source.split)
+    doc_id_to_title: dict[str, str] = {}
+    doc_id_to_content: dict[str, str] = {}
+    for row in source_ds:
+        doc_id = row[cfg.source.doc_id_column]
+        doc_id_to_title[doc_id] = row.get(cfg.source.title_column, "")
+        doc_id_to_content[doc_id] = row.get("content", "")
+    logging.info("Built title/content mapping for %d documents", len(doc_id_to_title))
 
     logging.info("Building encoder from %s", cfg.index.encoder)
     encoder = build_encoder(cfg.index.encoder)
@@ -103,31 +143,78 @@ def run_batch_query(cfg: QueryConfig) -> None:
             scores[q_idx, rank] = res["score"]
         retrieved_doc_ids.append(doc_ids)
 
-    output = cfg.output.expanduser()
     output.mkdir(parents=True, exist_ok=True)
-    run_file = output / "run.txt"
     qrels_file = output / "qrels.txt"
 
     logging.info("Writing MSMARCO format files")
     with run_file.open("w", encoding="utf-8") as f:
         for q_idx in range(num_queries):
             qid = qids[q_idx]
+            seen_docs: set[str] = set()
+            new_rank = 1
+            first_chunk_id: str | None = None
+            first_doc_id: str | None = None
+            first_chunk_idx: int | None = None
             for rank in range(cfg.k):
                 chunk_id = retrieved_doc_ids[q_idx][rank]
-                doc_id, _ = parse_chunk_id(chunk_id)
+                doc_id, chunk_idx = parse_chunk_id(chunk_id)
+                if doc_id in seen_docs:
+                    continue
+                seen_docs.add(doc_id)
+                if first_doc_id is None:
+                    first_chunk_id = chunk_id
+                    first_doc_id = doc_id
+                    first_chunk_idx = chunk_idx
                 score = scores[q_idx, rank]
-                f.write(f"{qid} Q0 {doc_id} {rank + 1} {score:.6f} colbert\n")
+                f.write(f"{qid} Q0 {doc_id} {new_rank} {score:.6f} colbert\n")
+                new_rank += 1
 
-    with qrels_file.open("w", encoding="utf-8") as f:
-        for q_idx in range(num_queries):
-            qid = qids[q_idx]
-            doc_id = target_doc_ids[q_idx]
-            f.write(f"{qid} 0 {doc_id} 1\n")
+            if q_idx % cfg.sample_interval == 0:
+                target_doc_id = target_doc_ids[q_idx]
+                retrieved_title = doc_id_to_title.get(first_doc_id or "", "<unknown>")
+                target_title = doc_id_to_title.get(target_doc_id, "<unknown>")
+                retrieved_content = doc_id_to_content.get(first_doc_id or "", "")
+                target_content = doc_id_to_content.get(target_doc_id, "")
+                hit = "HIT" if first_doc_id == target_doc_id else "MISS"
+                logging.info(
+                    "Sample [%d/%d] %s\n"
+                    "  Query: %s\n"
+                    "  Retrieved: %s (chunk %s)\n"
+                    "    Title: %s\n"
+                    "    Content: %s\n"
+                    "  Target: %s\n"
+                    "    Title: %s\n"
+                    "    Content: %s",
+                    q_idx,
+                    num_queries,
+                    hit,
+                    queries[q_idx],
+                    first_chunk_id,
+                    first_chunk_idx,
+                    retrieved_title or "<no title>",
+                    retrieved_content.replace("\n", " ")
+                    if retrieved_content
+                    else "<no content>",
+                    target_doc_id,
+                    target_title or "<no title>",
+                    target_content.replace("\n", " ")
+                    if target_content
+                    else "<no content>",
+                )
+
+    if qrels_file.exists():
+        logging.info("Qrels file already exists at %s, skipping", qrels_file)
+    else:
+        with qrels_file.open("w", encoding="utf-8") as f:
+            for q_idx in range(num_queries):
+                qid = qids[q_idx]
+                doc_id = target_doc_ids[q_idx]
+                f.write(f"{qid} 0 {doc_id} 1\n")
+        logging.info("Wrote qrels file to %s (%d entries)", qrels_file, num_queries)
 
     logging.info(
         "Wrote run file to %s (%d queries x %d results)", run_file, num_queries, cfg.k
     )
-    logging.info("Wrote qrels file to %s (%d entries)", qrels_file, num_queries)
 
 
 if __name__ == "__main__":
