@@ -1,32 +1,36 @@
-# Legal RAG Evaluation Pipeline
+# Legal RAG Evaluation Pipeline - LFM2-ColBERT-350M
 #
 # This pipeline builds the PLAID index, queries it with generated questions,
 # and evaluates retrieval quality using pyserini.
 #
 # Usage:
-#   task-tracker submit pipelines/legal_rag_evaluation.yaml
+#   task-tracker submit pipelines/lfm2_colbert_350m_evaluation.yaml
 
-name: legal_rag_evaluation
-description: Build PLAID index, batch query with generated questions, and evaluate with pyserini
+name: lfm2_colbert_350m_evaluation
+description: Build PLAID index with LFM2-ColBERT-350M, batch query, and evaluate
 version: "2.0"
 
 project: legal-rag
-experiment: colbert_juri_baseline
+experiment: legal_rag
 
 defaults:
   base_dir: /data/workspace/${USER}
 
   # Dataset configuration
   dataset: artefactory/Argimi-Legal-French-Jurisprudence
-  subset: juri
+  subset: constit
   split: train
+  doc_id_column: id
+  title_column: title
 
   # Model configuration
-  encoder_model: maastrichtlawtech/colbert-legal-french
+  encoder_model: LiquidAI/LFM2-ColBERT-350M
 
   # Index configuration
-  index_name: legal_french_index
-  batch_size: 32768
+  index_name: lfm2_colbert_350m_${subset}_index
+  batch_size: 512  # reduced for larger 350M model
+  accumulation_size: 32768  # 32 * 1024
+  pool_factor: 1  # 1 = no pooling, higher = more compression
 
   # Query configuration
   k: 100
@@ -35,7 +39,7 @@ defaults:
   # Paths
   index_dir: ${base_dir}/legal-rag/index
   questions_dir: /data/workspace/hrandrianarivo/artefact_legal_constit_questions
-  output_dir: ${base_dir}/legal-rag/evaluation
+  output_dir: ${base_dir}/legal-rag/evaluation/lfm2_colbert_350m
 
 steps:
   # Step 0: Build PLAID index
@@ -46,7 +50,10 @@ steps:
       subset: "${subset}"
       split: "${split}"
       batch_size: ${batch_size}
+      accumulation_size: ${accumulation_size}
+      pool_factor: ${pool_factor}
       index_folder: "${index_dir}"
+      index_name: "${index_name}"
     gpu_count: 1
     artifacts:
       inputs:
@@ -61,9 +68,14 @@ steps:
     arguments:
       questions: "${questions_dir}"
       output: "${output_dir}"
-      index.path: "${index_dir}"
+      path: "${index_dir}"
       index.name: "${index_name}"
-      index.encoder: "${encoder_model}"
+      encoder: "${encoder_model}"
+      source.name: "${dataset}"
+      subset: "${subset}"
+      split: "${split}"
+      doc_id_column: "${doc_id_column}"
+      title_column: "${title_column}"
       k: ${k}
       batch_size: ${query_batch_size}
     gpu_count: 1

@@ -1,0 +1,104 @@
+# Legal RAG Evaluation Pipeline - ColBERTv2.0-mmarcoFR
+#
+# This pipeline builds the PLAID index, queries it with generated questions,
+# and evaluates retrieval quality using pyserini.
+#
+# Usage:
+#   task-tracker submit pipelines/colbertv2_mmarco_fr_evaluation.yaml
+
+name: colbertv2_mmarco_fr_evaluation
+description: Build PLAID index with ColBERTv2.0-mmarcoFR, batch query, and evaluate
+version: "2.0"
+
+project: legal-rag
+experiment: legal_rag
+
+defaults:
+  base_dir: /data/workspace/${USER}
+
+  # Dataset configuration
+  dataset: artefactory/Argimi-Legal-French-Jurisprudence
+  subset: constit
+  split: train
+  doc_id_column: id
+  title_column: title
+
+  # Model configuration
+  encoder_model: AdrienB134/ColBERTv2.0-mmarcoFR
+
+  # Index configuration
+  index_name: colbertv2_mmarco_fr_${subset}_index
+  batch_size: 1024
+  accumulation_size: 32768  # 32 * 1024
+  pool_factor: 1  # 1 = no pooling, higher = more compression
+
+  # Query configuration
+  k: 100
+  query_batch_size: 32
+
+  # Paths
+  index_dir: ${base_dir}/legal-rag/index
+  questions_dir: /data/workspace/hrandrianarivo/artefact_legal_constit_questions
+  output_dir: ${base_dir}/legal-rag/evaluation/colbertv2_mmarco_fr
+
+steps:
+  # Step 0: Build PLAID index
+  - command: "python scripts/indexer.py"
+    arguments:
+      model: "${encoder_model}"
+      dataset: "${dataset}"
+      subset: "${subset}"
+      split: "${split}"
+      batch_size: ${batch_size}
+      accumulation_size: ${accumulation_size}
+      pool_factor: ${pool_factor}
+      index_folder: "${index_dir}"
+      index_name: "${index_name}"
+    gpu_count: 1
+    artifacts:
+      inputs:
+        - path: "${dataset}"
+          type: Dataset
+      outputs:
+        - path: "${index_dir}/${index_name}"
+          type: Dataset
+
+  # Step 1: Batch query the index
+  - command: "python scripts/batch_query.py"
+    arguments:
+      questions: "${questions_dir}"
+      output: "${output_dir}"
+      path: "${index_dir}"
+      index.name: "${index_name}"
+      encoder: "${encoder_model}"
+      source.name: "${dataset}"
+      subset: "${subset}"
+      split: "${split}"
+      doc_id_column: "${doc_id_column}"
+      title_column: "${title_column}"
+      k: ${k}
+      batch_size: ${query_batch_size}
+    gpu_count: 1
+    artifacts:
+      inputs:
+        - path: "${index_dir}/${index_name}"
+          type: Dataset
+        - path: "${questions_dir}"
+          type: Dataset
+      outputs:
+        - path: "${output_dir}/run.txt"
+          type: Dataset
+        - path: "${output_dir}/qrels.txt"
+          type: Dataset
+
+  # Step 2: Evaluate with pyserini
+  - command: "python -m pyserini.eval.trec_eval -c -m recall.1,5,10,100 ${output_dir}/qrels.txt ${output_dir}/run.txt"
+    artifacts:
+      inputs:
+        - path: "${output_dir}/run.txt"
+          type: Dataset
+        - path: "${output_dir}/qrels.txt"
+          type: Dataset
+      outputs:
+        - path: "${output_dir}/metrics.txt"
+          type: Metrics

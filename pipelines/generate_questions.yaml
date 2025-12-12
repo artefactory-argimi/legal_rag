@@ -1,0 +1,68 @@
+# Question Generation Pipeline
+#
+# This pipeline generates question/answer pairs from legal documents
+# using an LLM to extract facts and create retriever-friendly questions.
+#
+# Usage:
+#   task-tracker submit pipelines/generate_questions.yaml
+
+name: generate_questions
+description: Generate Q&A pairs from legal documents for retrieval evaluation
+version: "1.0"
+
+project: legal-rag
+experiment: legal_rag
+
+defaults:
+  base_dir: /data/workspace/${USER}
+
+  # Dataset configuration
+  dataset: artefactory/Argimi-Legal-French-Jurisprudence
+  subset: constit
+  split: train
+  text_column: content
+  doc_id_column: id
+
+  # LLM configuration
+  api_base: http://localhost:8000/v1
+  api_key: local
+  model: local
+  temperature: 0.2
+  max_tokens: 32768
+
+  # Generation configuration
+  seed: 42
+  max_context_chars: 8000
+  num_threads: 16
+  log_every: 50
+
+  # Paths
+  output_dir: ${base_dir}/legal-rag/questions/${subset}
+
+steps:
+  - command: "python scripts/generate_question.py"
+    arguments:
+      dataset: "${dataset}"
+      config: "${subset}"
+      split: "${split}"
+      text_column: "${text_column}"
+      doc_id_column: "${doc_id_column}"
+      api_base: "${api_base}"
+      api_key: "${api_key}"
+      model: "${model}"
+      temperature: ${temperature}
+      max_tokens: ${max_tokens}
+      seed: ${seed}
+      max_context_chars: ${max_context_chars}
+      num_threads: ${num_threads}
+      log_every: ${log_every}
+      output_dir: "${output_dir}"
+      overwrite: true
+    gpu_count: 0
+    artifacts:
+      inputs:
+        - path: "${dataset}"
+          type: Dataset
+      outputs:
+        - path: "${output_dir}"
+          type: Dataset
