@@ -48,96 +48,109 @@ class GenerationConfig:
     log_every: int = 20
 
 
-class ExtractFacts(dspy.Signature):
-    """Extrait trois faits clés et vérifiables d'un texte juridique."""
+class GenerateQA(dspy.Signature):
+    """Génère une paire question-réponse à partir d'un texte juridique français.
+
+    La question doit être formulée de manière naturelle, comme pour un moteur de recherche.
+    La réponse doit être une citation exacte ou une paraphrase courte du texte source.
+    """
 
     context: str = dspy.InputField(desc="Texte d'une décision juridique en français")
-    fact_1: str = dspy.OutputField(
-        desc="Premier fait clé: une information factuelle courte (max 15 mots), "
-        "citée ou paraphrasée du texte, en français"
-    )
-    fact_2: str = dspy.OutputField(
-        desc="Deuxième fait clé: une information factuelle courte (max 15 mots), "
-        "citée ou paraphrasée du texte, en français"
-    )
-    fact_3: str = dspy.OutputField(
-        desc="Troisième fait clé: une information factuelle courte (max 15 mots), "
-        "citée ou paraphrasée du texte, en français"
-    )
-    main_topic: str = dspy.OutputField(
-        desc="Le sujet principal du texte en quelques mots, en français uniquement"
-    )
-
-
-class QAWithSpan(dspy.Signature):
-    """Génère une question courte dont la réponse est l'un des faits fournis."""
-
-    facts: str = dspy.InputField(
-        desc="Liste de 3 faits extraits du texte, séparés par des numéros"
-    )
-    context: str = dspy.InputField(desc="Texte source pour vérifier la réponse")
     question: str = dspy.OutputField(
-        desc="Question courte et simple en français (max 12 mots) dont la réponse "
-        "est l'un des faits. La question doit être formulée pour un moteur de recherche."
+        desc="Question courte et naturelle en français (max 12 mots), "
+        "formulée comme une requête de recherche"
     )
     answer: str = dspy.OutputField(
-        desc="L'un des 3 faits fournis, recopié exactement comme réponse"
+        desc="Réponse factuelle courte (max 15 mots), citée ou paraphrasée "
+        "directement du contexte, en français"
+    )
+    main_topic: str = dspy.OutputField(
+        desc="Le sujet principal du texte en quelques mots, en français"
     )
 
 
-class ValidateFrench(dspy.Signature):
-    """Vérifie que le texte est en français."""
+class ValidateQA(dspy.Signature):
+    """Vérifie la qualité d'une paire question-réponse générée."""
 
-    text: str = dspy.InputField(desc="Texte à valider")
+    question: str = dspy.InputField(desc="La question posée")
+    answer: str = dspy.InputField(desc="La réponse proposée")
+    context: str = dspy.InputField(desc="Le texte source")
     is_french: bool = dspy.OutputField(
-        desc="True si le texte est en français, False sinon"
+        desc="True si la question ET la réponse sont en français, False sinon"
     )
+    answer_in_context: bool = dspy.OutputField(
+        desc="True si la réponse (ou son contenu factuel) est présente dans le contexte, "
+        "False sinon"
+    )
+    answers_question: bool = dspy.OutputField(
+        desc="True si la réponse répond DIRECTEMENT et CORRECTEMENT à la question posée, "
+        "False si la réponse est hors sujet ou ne correspond pas à ce qui est demandé"
+    )
+
+
+def qa_reward_fn(inputs: dict, pred: dspy.Prediction) -> float:
+    """Fonction de récompense pour valider la cohérence question-réponse.
+
+    Système de points (sur 4):
+    - 1 point: La question et la réponse sont en français
+    - 1 point: La réponse est présente dans le contexte
+    - 2 points: La réponse répond directement à la question
+
+    Returns:
+        Score normalisé entre 0 et 1.
+    """
+    max_points = 4
+    points = 0
+
+    validator = dspy.Predict(ValidateQA)
+    result = validator(
+        question=pred.question,
+        answer=pred.answer,
+        context=inputs["context"],
+    )
+
+    if result.is_french:
+        points += 1
+
+    if result.answer_in_context:
+        points += 1
+
+    if result.answers_question:
+        points += 2
+
+    return points / max_points
 
 
 class QAAgent(dspy.Module):
-    """Multi-step DSPy agent: extract facts, then generate one Q&A based on a fact."""
+    """Agent DSPy simplifié avec auto-vérification via Refine.
 
-    def __init__(self) -> None:
+    Génère une paire Q&A puis vérifie automatiquement que la réponse
+    correspond à la question. Réessaie avec feedback si la validation échoue.
+    """
+
+    def __init__(self, max_retries: int = 3) -> None:
         super().__init__()
-        extract_instructions = (
+        instructions = (
             "Lis attentivement ce texte juridique français. "
-            "Extrait 3 faits clés, vérifiables et distincts du texte. "
-            "Chaque fait doit être une information factuelle courte (max 15 mots). "
-            "Exemples de faits: dates, montants, noms de parties, décisions, lieux. "
-            "IMPORTANT: Réponds UNIQUEMENT en français."
+            "Génère une question naturelle (comme pour un moteur de recherche) "
+            "et sa réponse factuelle extraite du texte. "
+            "IMPORTANT: La réponse DOIT répondre directement à la question. "
+            "IMPORTANT: Tout doit être en français."
         )
-        qa_instructions = (
-            "À partir des 3 faits fournis, génère UNE question simple en français "
-            "(maximum 12 mots) dont la réponse est exactement l'un des faits. "
-            "La question doit être naturelle, comme si elle était posée à un moteur de recherche. "
-            "IMPORTANT: La réponse doit être l'un des 3 faits, recopié exactement. "
-            "Question et réponse UNIQUEMENT en français."
+        base_generator = dspy.ChainOfThought(GenerateQA, instructions=instructions)
+        self.generator = dspy.Refine(
+            module=base_generator,
+            N=max_retries,
+            reward_fn=qa_reward_fn,
+            threshold=1.0,
         )
-        self.fact_extractor = dspy.ChainOfThought(
-            ExtractFacts, instructions=extract_instructions
-        )
-        self.qa_generator = dspy.ChainOfThought(
-            QAWithSpan, instructions=qa_instructions
-        )
-        self.language_validator = dspy.Predict(ValidateFrench)
 
     def forward(self, context: str) -> dspy.Prediction:
-        facts_pred = self.fact_extractor(context=context)
-        facts_list = (
-            f"1. {facts_pred.fact_1}\n2. {facts_pred.fact_2}\n3. {facts_pred.fact_3}"
-        )
-        qa_pred = self.qa_generator(
-            facts=facts_list,
-            context=context,
-        )
-        combined_text = f"{qa_pred.question} {qa_pred.answer}"
-        validation = self.language_validator(text=combined_text)
+        pred = self.generator(context=context)
         return dspy.Prediction(
-            question=qa_pred.question,
-            answer=qa_pred.answer,
-            main_topic=facts_pred.main_topic,
-            facts=[facts_pred.fact_1, facts_pred.fact_2, facts_pred.fact_3],
-            is_french=validation.is_french,
+            question=pred.question,
+            answer=pred.answer,
+            main_topic=pred.main_topic,
         )
 
 
@@ -200,7 +213,6 @@ class RowProcessor:
             question = (pred.question or "").strip()
             answer = (pred.answer or "").strip()
             main_topic = (getattr(pred, "main_topic", "") or "").strip()
-            is_french = getattr(pred, "is_french", True)
 
             if not question or not answer:
                 logging.warning(
@@ -208,53 +220,13 @@ class RowProcessor:
                 )
                 return None
 
-            if not is_french:
-                logging.warning(
-                    "Skipping doc_id %s because Q&A is not in French: "
-                    "question=%s, answer=%s",
-                    doc_id,
-                    question,
-                    answer,
-                )
-                return None
-
             span_start, span_end = find_span(context_excerpt, answer)
-            if answer and span_start is None:
-                try:
-                    retry_context = (
-                        context_excerpt
-                        + "\n\nIMPORTANT: La réponse doit être une citation EXACTE "
-                        "du texte ci-dessus (max 10 mots), en français."
-                    )
-                    follow_up = self.agent(context=retry_context)
-                    answer = (follow_up.answer or answer).strip()
-                    main_topic = (
-                        getattr(follow_up, "main_topic", "") or main_topic
-                    ).strip()
-                    is_french = getattr(follow_up, "is_french", True)
-                    if not is_french:
-                        logging.warning(
-                            "Skipping doc_id %s because retry Q&A is not in French: "
-                            "answer=%s",
-                            doc_id,
-                            answer,
-                        )
-                        return None
-                    span_start, span_end = find_span(context_excerpt, answer)
-                except Exception as e:  # noqa: BLE001
-                    logging.warning(
-                        "Skipping doc_id %s due to DSPy retry failure: %s", doc_id, e
-                    )
-                    return None
-
             if span_start is None or span_end is None:
                 logging.warning(
                     "Skipping doc_id %s because answer span not found in context.",
                     doc_id,
                 )
                 return None
-
-            facts = getattr(pred, "facts", [])
 
             return (
                 str(uuid.uuid4()),
@@ -264,7 +236,6 @@ class RowProcessor:
                 span_start,
                 span_end,
                 main_topic,
-                facts,
             )
         except Exception as e:  # noqa: BLE001
             logging.warning("Skipping row %s due to unexpected error: %s", idx, e)
@@ -279,7 +250,6 @@ RECORD_FIELDS = (
     "answer_span_start",
     "answer_span_end",
     "main_topic",
-    "facts",
 )
 
 
@@ -310,15 +280,14 @@ def build_qa_records(
         if result is not None:
             records.append(result)
             if log_every > 0 and len(records) % log_every == 0:
-                _, doc_id, question, answer, _, _, main_topic, facts = result
+                _, doc_id, question, answer, _, _, main_topic = result
                 logging.info(
-                    "Progress: %d records | doc_id=%s | topic=%s | Q=%s | A=%s | facts=%s",
+                    "Progress: %d records | doc_id=%s | topic=%s | Q=%s | A=%s",
                     len(records),
                     doc_id,
                     main_topic,
                     question,
                     answer,
-                    facts[:2] if facts else [],
                 )
 
     logging.info("Generated %d records from %d rows", len(records), len(rows_list))
@@ -391,12 +360,11 @@ def main(cfg: GenerationConfig) -> None:
     if len(ds_out):
         sample = ds_out[0]
         logging.info(
-            "Sample -> doc_id: %s | topic: %s | question: %s | answer: %s | facts: %s",
+            "Sample -> doc_id: %s | topic: %s | question: %s | answer: %s",
             sample["doc_id"],
             sample["main_topic"],
             sample["question"],
             sample["answer"],
-            sample.get("facts", []),
         )
 
 
