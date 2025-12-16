@@ -142,12 +142,9 @@ def build_index(cfg: ScriptConfig):
 
     index_path = epath.Path(cfg.index_folder) / cfg.index_name
     if index_path.exists() and not cfg.force:
-        logging.info(
-            "Index already exists at %s, skipping (use --force to rebuild)",
-            index_path,
+        raise FileExistsError(
+            f"Index already exists at {index_path}. Use --force to rebuild."
         )
-        print(f"\n⏭ Index already exists at {index_path}, skipping.")
-        return
 
     logging.info(
         "Building PLAID index: encoder=%s dataset=%s slice=%s output=%s",
