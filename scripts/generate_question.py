@@ -48,24 +48,48 @@ class GenerationConfig:
     log_every: int = 20
 
 
-class GenerateQA(dspy.Signature):
-    """Génère une paire question-réponse à partir d'un texte juridique français.
+class ExtractCandidates(dspy.Signature):
+    """Extrait plusieurs informations clés d'un texte juridique pour générer des questions.
 
-    La question doit être formulée de manière naturelle, comme pour un moteur de recherche.
-    La réponse doit être une citation exacte ou une paraphrase courte du texte source.
+    Identifie des faits variés: dates, montants, noms, décisions, lieux, durées, etc.
     """
 
     context: str = dspy.InputField(desc="Texte d'une décision juridique en français")
-    question: str = dspy.OutputField(
-        desc="Question courte et naturelle en français (max 12 mots), "
-        "formulée comme une requête de recherche"
-    )
-    answer: str = dspy.OutputField(
-        desc="Réponse factuelle courte (max 15 mots), citée ou paraphrasée "
-        "directement du contexte, en français"
-    )
     main_topic: str = dspy.OutputField(
         desc="Le sujet principal du texte en quelques mots, en français"
+    )
+    candidate_1: str = dspy.OutputField(
+        desc="Premier fait clé: information factuelle courte (max 15 mots) extraite du texte"
+    )
+    candidate_2: str = dspy.OutputField(
+        desc="Deuxième fait clé: information factuelle différente (max 15 mots)"
+    )
+    candidate_3: str = dspy.OutputField(
+        desc="Troisième fait clé: information factuelle différente (max 15 mots)"
+    )
+
+
+class SelectAndGenerateQA(dspy.Signature):
+    """Sélectionne le meilleur candidat et génère une question dont il est la réponse.
+
+    Choisit le candidat qui permet de formuler la question la plus claire et naturelle.
+    """
+
+    context: str = dspy.InputField(desc="Texte source")
+    main_topic: str = dspy.InputField(desc="Sujet principal du texte")
+    candidates: str = dspy.InputField(
+        desc="Liste des faits candidats extraits du texte"
+    )
+    selected_candidate: int = dspy.OutputField(
+        desc="Numéro du candidat sélectionné (1, 2 ou 3) - celui qui permet "
+        "la question la plus claire et vérifiable"
+    )
+    question: str = dspy.OutputField(
+        desc="Question courte et naturelle en français (max 12 mots), "
+        "formulée comme une requête de recherche, dont la réponse est le candidat sélectionné"
+    )
+    answer: str = dspy.OutputField(
+        desc="Le candidat sélectionné, recopié exactement comme réponse"
     )
 
 
@@ -121,25 +145,63 @@ def qa_reward_fn(inputs: dict, pred: dspy.Prediction) -> float:
     return points / max_points
 
 
-class QAAgent(dspy.Module):
-    """Agent DSPy simplifié avec auto-vérification via Refine.
+class QAGenerator(dspy.Module):
+    """Module de génération Q&A en deux étapes: extraction puis sélection."""
 
-    Génère une paire Q&A puis vérifie automatiquement que la réponse
-    correspond à la question. Réessaie avec feedback si la validation échoue.
+    def __init__(self) -> None:
+        super().__init__()
+        extract_instructions = (
+            "Lis attentivement ce texte juridique français. "
+            "Extrait 3 faits clés, variés et vérifiables: dates, montants, noms, "
+            "décisions, lieux, durées, etc. "
+            "Chaque fait doit être distinct et factuel. "
+            "IMPORTANT: Tout en français."
+        )
+        select_instructions = (
+            "Parmi les 3 candidats, choisis celui qui permet de formuler "
+            "la question la plus claire et naturelle. "
+            "La question doit ressembler à une requête de recherche. "
+            "IMPORTANT: La réponse doit être le candidat sélectionné, recopié exactement. "
+            "IMPORTANT: La réponse DOIT répondre directement à la question."
+        )
+        self.extractor = dspy.ChainOfThought(
+            ExtractCandidates, instructions=extract_instructions
+        )
+        self.selector = dspy.ChainOfThought(
+            SelectAndGenerateQA, instructions=select_instructions
+        )
+
+    def forward(self, context: str) -> dspy.Prediction:
+        extracted = self.extractor(context=context)
+        candidates = (
+            f"1. {extracted.candidate_1}\n"
+            f"2. {extracted.candidate_2}\n"
+            f"3. {extracted.candidate_3}"
+        )
+        selected = self.selector(
+            context=context,
+            main_topic=extracted.main_topic,
+            candidates=candidates,
+        )
+        return dspy.Prediction(
+            question=selected.question,
+            answer=selected.answer,
+            main_topic=extracted.main_topic,
+        )
+
+
+class QAAgent(dspy.Module):
+    """Agent DSPy avec extraction de candidats et auto-vérification via Refine.
+
+    Étape 1: Extrait 3 faits candidats du document
+    Étape 2: Sélectionne le meilleur et génère une question
+    Étape 3: Vérifie la cohérence Q&A, réessaie avec feedback si nécessaire
     """
 
     def __init__(self, max_retries: int = 3) -> None:
         super().__init__()
-        instructions = (
-            "Lis attentivement ce texte juridique français. "
-            "Génère une question naturelle (comme pour un moteur de recherche) "
-            "et sa réponse factuelle extraite du texte. "
-            "IMPORTANT: La réponse DOIT répondre directement à la question. "
-            "IMPORTANT: Tout doit être en français."
-        )
-        base_generator = dspy.ChainOfThought(GenerateQA, instructions=instructions)
         self.generator = dspy.Refine(
-            module=base_generator,
+            module=QAGenerator(),
             N=max_retries,
             reward_fn=qa_reward_fn,
             threshold=1.0,
