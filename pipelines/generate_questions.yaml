@@ -57,7 +57,6 @@ steps:
       num_threads: ${num_threads}
       log_every: ${log_every}
       output_dir: "${output_dir}"
-      overwrite: true
     gpu_count: 0
     artifacts:
       inputs:

@@ -38,7 +38,7 @@ defaults:
 
   # Paths
   index_dir: ${base_dir}/legal-rag/index
-  questions_dir: /data/workspace/hrandrianarivo/artefact_legal_constit_questions
+  questions_dir: ${base_dir}/legal-rag/questions/${subset}
   output_dir: ${base_dir}/legal-rag/evaluation/colbertv2_mmarco_fr
 
 steps:
