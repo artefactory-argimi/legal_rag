@@ -51,12 +51,20 @@ class GenerationConfig:
 class ExtractCandidates(dspy.Signature):
     """Extrait plusieurs informations clés d'un texte juridique pour générer des questions.
 
+    Ces questions serviront à une tâche de RETRIEVAL de documents: elles doivent permettre
+    de retrouver CE document spécifique parmi des milliers d'autres documents juridiques.
     Identifie des faits variés: dates, montants, noms, décisions, lieux, durées, etc.
     """
 
     context: str = dspy.InputField(desc="Texte d'une décision juridique en français")
+    document_title: str = dspy.OutputField(
+        desc="Titre ou intitulé du document/loi/décision (extrait du texte)"
+    )
     main_topic: str = dspy.OutputField(
         desc="Le sujet principal du texte en quelques mots, en français"
+    )
+    key_entities: str = dspy.OutputField(
+        desc="Noms propres importants: personnes, lois, articles, institutions mentionnés"
     )
     candidate_1: str = dspy.OutputField(
         desc="Premier fait clé: information factuelle courte (max 15 mots) extraite du texte"
@@ -70,23 +78,29 @@ class ExtractCandidates(dspy.Signature):
 
 
 class SelectAndGenerateQA(dspy.Signature):
-    """Sélectionne le meilleur candidat et génère une question dont il est la réponse.
+    """Sélectionne le meilleur candidat et génère une question SPÉCIFIQUE dont il est la réponse.
 
-    Choisit le candidat qui permet de formuler la question la plus claire et naturelle.
+    CONTEXTE RETRIEVAL: Cette question sera utilisée pour retrouver CE document parmi des
+    milliers d'autres. Une question trop générique retournera de mauvais documents.
+    La question DOIT inclure des termes distinctifs du document (nom de loi, personne, lieu).
+    Une bonne question ne peut correspondre qu'à CE document précis.
     """
 
     context: str = dspy.InputField(desc="Texte source")
+    document_title: str = dspy.InputField(desc="Titre du document/loi/décision")
     main_topic: str = dspy.InputField(desc="Sujet principal du texte")
+    key_entities: str = dspy.InputField(desc="Noms propres et entités clés du document")
     candidates: str = dspy.InputField(
         desc="Liste des faits candidats extraits du texte"
     )
     selected_candidate: int = dspy.OutputField(
         desc="Numéro du candidat sélectionné (1, 2 ou 3) - celui qui permet "
-        "la question la plus claire et vérifiable"
+        "la question la plus spécifique et vérifiable"
     )
     question: str = dspy.OutputField(
-        desc="Question courte et naturelle en français (max 12 mots), "
-        "formulée comme une requête de recherche, dont la réponse est le candidat sélectionné"
+        desc="Question SPÉCIFIQUE en français (15-25 mots) qui DOIT inclure "
+        "au moins un terme distinctif du document (nom de loi, personne, article, lieu). "
+        "La question doit être suffisamment précise pour identifier CE document uniquement."
     )
     answer: str = dspy.OutputField(
         desc="Le candidat sélectionné, recopié exactement comme réponse"
@@ -94,7 +108,10 @@ class SelectAndGenerateQA(dspy.Signature):
 
 
 class ValidateQA(dspy.Signature):
-    """Vérifie la qualité d'une paire question-réponse générée."""
+    """Vérifie la qualité d'une paire question-réponse générée pour une tâche de retrieval.
+
+    La spécificité est CRITIQUE: la question doit permettre de retrouver le bon document.
+    """
 
     question: str = dspy.InputField(desc="La question posée")
     answer: str = dspy.InputField(desc="La réponse proposée")
@@ -110,20 +127,32 @@ class ValidateQA(dspy.Signature):
         desc="True si la réponse répond DIRECTEMENT et CORRECTEMENT à la question posée, "
         "False si la réponse est hors sujet ou ne correspond pas à ce qui est demandé"
     )
+    is_specific: bool = dspy.OutputField(
+        desc="True si la question contient au moins un terme distinctif (nom de loi, "
+        "personne, article, lieu, date précise) qui la rend unique à ce document. "
+        "False si la question est trop générique et pourrait s'appliquer à n'importe quel "
+        "document juridique (CRITIQUE pour le retrieval: une question générique ne permettra "
+        "pas de retrouver le bon document)."
+    )
 
 
 def qa_reward_fn(inputs: dict, pred: dspy.Prediction) -> float:
-    """Fonction de récompense pour valider la cohérence question-réponse.
+    """Fonction de récompense pour valider la cohérence question-réponse pour le retrieval.
 
-    Système de points (sur 4):
+    Les questions sont générées pour une tâche de RETRIEVAL de documents: elles doivent
+    permettre de retrouver le document source parmi des milliers d'autres. La spécificité
+    est donc pondérée plus fortement (2 points).
+
+    Système de points (sur 6):
     - 1 point: La question et la réponse sont en français
     - 1 point: La réponse est présente dans le contexte
     - 2 points: La réponse répond directement à la question
+    - 2 points: La question est spécifique au document (CRITIQUE pour le retrieval)
 
     Returns:
         Score normalisé entre 0 et 1.
     """
-    max_points = 4
+    max_points = 6
     points = 0
 
     validator = dspy.Predict(ValidateQA)
@@ -142,25 +171,40 @@ def qa_reward_fn(inputs: dict, pred: dspy.Prediction) -> float:
     if result.answers_question:
         points += 2
 
+    if result.is_specific:
+        points += 2
+
     return points / max_points
 
 
 class QAGenerator(dspy.Module):
-    """Module de génération Q&A en deux étapes: extraction puis sélection."""
+    """Module de génération Q&A pour le retrieval en deux étapes: extraction puis sélection.
+
+    Génère des questions spécifiques permettant de retrouver le document source.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         extract_instructions = (
+            "CONTEXTE: Ces questions serviront à une tâche de RETRIEVAL pour retrouver "
+            "CE document parmi des milliers d'autres. "
             "Lis attentivement ce texte juridique français. "
+            "Identifie le titre du document et les entités clés (noms de lois, personnes, articles). "
             "Extrait 3 faits clés, variés et vérifiables: dates, montants, noms, "
             "décisions, lieux, durées, etc. "
-            "Chaque fait doit être distinct et factuel. "
+            "Chaque fait doit être distinct, factuel et SPÉCIFIQUE à ce document. "
             "IMPORTANT: Tout en français."
         )
         select_instructions = (
+            "OBJECTIF RETRIEVAL: La question générée sera utilisée pour retrouver CE document "
+            "parmi des milliers d'autres documents juridiques. "
             "Parmi les 3 candidats, choisis celui qui permet de formuler "
-            "la question la plus claire et naturelle. "
-            "La question doit ressembler à une requête de recherche. "
+            "la question la plus SPÉCIFIQUE et vérifiable. "
+            "CRITIQUE: La question DOIT inclure au moins un terme distinctif du document "
+            "(nom de loi, nom de personne, numéro d'article, lieu, date spécifique). "
+            "Une question trop générique comme 'Quel article a été déclaré conforme ?' est INACCEPTABLE "
+            "car elle retournerait des milliers de documents. "
+            "Exemple de bonne question: 'Quels articles de la loi sur le foncier public ont été déclarés conformes ?' "
             "IMPORTANT: La réponse doit être le candidat sélectionné, recopié exactement. "
             "IMPORTANT: La réponse DOIT répondre directement à la question."
         )
@@ -180,31 +224,44 @@ class QAGenerator(dspy.Module):
         )
         selected = self.selector(
             context=context,
+            document_title=extracted.document_title,
             main_topic=extracted.main_topic,
+            key_entities=extracted.key_entities,
             candidates=candidates,
         )
         return dspy.Prediction(
             question=selected.question,
             answer=selected.answer,
             main_topic=extracted.main_topic,
+            document_title=extracted.document_title,
+            key_entities=extracted.key_entities,
         )
 
 
 class QAAgent(dspy.Module):
-    """Agent DSPy avec extraction de candidats et auto-vérification via Refine.
+    """Agent DSPy pour générer des paires Q&A destinées au RETRIEVAL de documents.
 
-    Étape 1: Extrait 3 faits candidats du document
-    Étape 2: Sélectionne le meilleur et génère une question
-    Étape 3: Vérifie la cohérence Q&A, réessaie avec feedback si nécessaire
+    L'objectif est de créer des questions suffisamment spécifiques pour retrouver
+    le document source parmi des milliers d'autres documents juridiques.
+
+    Étape 1: Extrait 3 faits candidats du document (avec entités distinctives)
+    Étape 2: Sélectionne le meilleur et génère une question SPÉCIFIQUE au document
+    Étape 3: Vérifie la cohérence Q&A et la spécificité pour le retrieval, réessaie si nécessaire
     """
 
     def __init__(self, max_retries: int = 3) -> None:
         super().__init__()
+        # Threshold of 5/6 (0.833) allows one minor issue while still requiring:
+        # - French language (1pt)
+        # - Answer in context (1pt)
+        # - Answer matches question (2pts)
+        # - Question is specific (2pts) <- CRITICAL for document retrieval task
+        # A question that fails specificity will return wrong documents during retrieval.
         self.generator = dspy.Refine(
             module=QAGenerator(),
             N=max_retries,
             reward_fn=qa_reward_fn,
-            threshold=1.0,
+            threshold=5 / 6,
         )
 
     def forward(self, context: str) -> dspy.Prediction:
@@ -213,6 +270,8 @@ class QAAgent(dspy.Module):
             question=pred.question,
             answer=pred.answer,
             main_topic=pred.main_topic,
+            document_title=pred.document_title,
+            key_entities=pred.key_entities,
         )
 
 
@@ -274,7 +333,9 @@ class RowProcessor:
 
             question = (pred.question or "").strip()
             answer = (pred.answer or "").strip()
-            main_topic = (getattr(pred, "main_topic", "") or "").strip()
+            main_topic = (pred.main_topic or "").strip()
+            document_title = (pred.document_title or "").strip()
+            key_entities = (pred.key_entities or "").strip()
 
             if not question or not answer:
                 logging.warning(
@@ -298,6 +359,8 @@ class RowProcessor:
                 span_start,
                 span_end,
                 main_topic,
+                document_title,
+                key_entities,
             )
         except Exception as e:  # noqa: BLE001
             logging.warning("Skipping row %s due to unexpected error: %s", idx, e)
@@ -312,6 +375,8 @@ RECORD_FIELDS = (
     "answer_span_start",
     "answer_span_end",
     "main_topic",
+    "document_title",
+    "key_entities",
 )
 
 
@@ -342,12 +407,12 @@ def build_qa_records(
         if result is not None:
             records.append(result)
             if log_every > 0 and len(records) % log_every == 0:
-                _, doc_id, question, answer, _, _, main_topic = result
+                _, doc_id, question, answer, _, _, main_topic, doc_title, _ = result
                 logging.info(
-                    "Progress: %d records | doc_id=%s | topic=%s | Q=%s | A=%s",
+                    "Progress: %d records | doc_id=%s | title=%s | Q=%s | A=%s",
                     len(records),
                     doc_id,
-                    main_topic,
+                    doc_title[:40] if doc_title else main_topic[:40],
                     question,
                     answer,
                 )
@@ -422,9 +487,9 @@ def main(cfg: GenerationConfig) -> None:
     if len(ds_out):
         sample = ds_out[0]
         logging.info(
-            "Sample -> doc_id: %s | topic: %s | question: %s | answer: %s",
+            "Sample -> doc_id: %s | title: %s | question: %s | answer: %s",
             sample["doc_id"],
-            sample["main_topic"],
+            sample["document_title"] or sample["main_topic"],
             sample["question"],
             sample["answer"],
         )

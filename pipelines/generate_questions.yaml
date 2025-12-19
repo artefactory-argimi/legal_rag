@@ -8,7 +8,7 @@
 
 name: generate_questions
 description: Generate Q&A pairs from legal documents for retrieval evaluation
-version: "1.0"
+version: "1.1"
 
 project: legal-rag
 experiment: legal_rag
@@ -23,8 +23,19 @@ defaults:
   text_column: content
   doc_id_column: id
 
-  # LLM configuration
-  api_base: http://localhost:8000/v1
+  # LLM server configuration
+  llm_model: openai/gpt-oss-120b
+  server_host: 0.0.0.0
+  server_port: 8000
+  dtype: bfloat16
+  tp_size: 4
+  mem_fraction_static: 0.92
+  chunked_prefill_size: 4096
+  max_prefill_tokens: 16384
+  max_running_requests: 256
+
+  # LLM client configuration
+  api_base: http://localhost:${server_port}/v1
   api_key: local
   model: local
   temperature: 0.2
@@ -40,6 +51,25 @@ defaults:
   output_dir: ${base_dir}/legal-rag/questions/${subset}
 
 steps:
+  # Step 1: Launch the sglang LLM server
+  - command: "uvx sglang serve"
+    arguments:
+      model-path: "${llm_model}"
+      host: "${server_host}"
+      port: ${server_port}
+      dtype: "${dtype}"
+      tp-size: ${tp_size}
+      mem-fraction-static: ${mem_fraction_static}
+      chunked-prefill-size: ${chunked_prefill_size}
+      max-prefill-tokens: ${max_prefill_tokens}
+      max-running-requests: ${max_running_requests}
+      trust-remote-code: true
+    gpu_count: 4
+    artifacts:
+      inputs: []
+      outputs: []
+
+  # Step 2: Generate questions using the LLM
   - command: "python scripts/generate_question.py"
     arguments:
       dataset: "${dataset}"
