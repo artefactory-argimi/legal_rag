@@ -3,12 +3,18 @@
 # This pipeline generates question/answer pairs from legal documents
 # using an LLM to extract facts and create retriever-friendly questions.
 #
+# The pipeline uses a server/client pattern:
+# - Server step runs the LLM server in the background
+# - Health check step waits for server readiness
+# - Generation step runs once server is ready
+# - Server is automatically killed when generation completes
+#
 # Usage:
 #   task-tracker submit pipelines/generate_questions.yaml
 
 name: generate_questions
 description: Generate Q&A pairs from legal documents for retrieval evaluation
-version: "1.1"
+version: "2.0"
 
 project: legal-rag
 experiment: legal_rag
@@ -45,14 +51,21 @@ defaults:
   seed: 42
   max_context_chars: 8000
   num_threads: 16
-  log_every: 50
+  log_every: 100
+
+  # Health check configuration
+  health_check_interval: 5
+  health_check_timeout: 600
 
   # Paths
   output_dir: ${base_dir}/legal-rag/questions/${subset}
 
 steps:
-  # Step 1: Launch the sglang LLM server
-  - command: "uvx sglang serve"
+  # Step 0: Launch the sglang LLM server (runs until killed)
+  # GPT-OSS requires: triton, trtllm_mha, fa3, or fa4
+  # triton works on A6000 Ada (Ada Lovelace architecture)
+  - id: server
+    command: "uvx sglang serve"
     arguments:
       model-path: "${llm_model}"
       host: "${server_host}"
@@ -63,14 +76,28 @@ steps:
       chunked-prefill-size: ${chunked_prefill_size}
       max-prefill-tokens: ${max_prefill_tokens}
       max-running-requests: ${max_running_requests}
+      attention-backend: triton
+      sampling-backend: pytorch
+      reasoning-parser: gpt-oss
       trust-remote-code: true
+    depends_on: []
     gpu_count: 4
     artifacts:
       inputs: []
       outputs: []
 
+  # Step 1: Wait for server to be ready
+  - id: health_check
+    command: "bash -c 'for i in $(seq 1 120); do curl -sf http://localhost:${server_port}/health && echo Server ready && exit 0; echo Waiting for server... attempt $i/120; sleep ${health_check_interval}; done; echo Timeout; exit 1'"
+    depends_on: []
+    gpu_count: 0
+    artifacts:
+      inputs: []
+      outputs: []
+
   # Step 2: Generate questions using the LLM
-  - command: "python scripts/generate_question.py"
+  - id: generate
+    command: "python scripts/generate_question.py"
     arguments:
       dataset: "${dataset}"
       config: "${subset}"
@@ -87,6 +114,8 @@ steps:
       num_threads: ${num_threads}
       log_every: ${log_every}
       output_dir: "${output_dir}"
+    depends_on: [health_check]
+    kill_after: [server]
     gpu_count: 0
     artifacts:
       inputs:
