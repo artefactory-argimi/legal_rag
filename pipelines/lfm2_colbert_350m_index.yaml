@@ -1,0 +1,54 @@
+# Legal RAG Index Pipeline - LFM2-ColBERT-350M
+#
+# This pipeline builds the PLAID index for LFM2-ColBERT-350M.
+#
+# Usage:
+#   task-tracker submit pipelines/lfm2_colbert_350m_index.yaml
+
+name: lfm2_colbert_350m_index
+description: Build PLAID index with LFM2-ColBERT-350M
+version: "2.0"
+
+project: legal-rag
+experiment: legal_rag
+
+defaults:
+  base_dir: /data/workspace/${USER}
+
+  # Dataset configuration
+  dataset: artefactory/Argimi-Legal-French-Jurisprudence
+  subset: constit
+  split: train
+
+  # Model configuration
+  encoder_model: LiquidAI/LFM2-ColBERT-350M
+
+  # Index configuration
+  index_name: lfm2_colbert_350m_${subset}_index
+  batch_size: 512  # reduced for larger 350M model
+  accumulation_size: 32768  # 32 * 1024
+  pool_factor: 1  # 1 = no pooling, higher = more compression
+
+  # Paths
+  index_dir: ${base_dir}/legal-rag/index
+
+steps:
+  - command: "python scripts/indexer.py"
+    arguments:
+      model: "${encoder_model}"
+      dataset: "${dataset}"
+      subset: "${subset}"
+      split: "${split}"
+      batch_size: ${batch_size}
+      accumulation_size: ${accumulation_size}
+      pool_factor: ${pool_factor}
+      index_folder: "${index_dir}"
+      index_name: "${index_name}"
+    gpu_count: 1
+    artifacts:
+      inputs:
+        - path: "${dataset}"
+          type: Dataset
+      outputs:
+        - path: "${index_dir}/${index_name}"
+          type: Dataset

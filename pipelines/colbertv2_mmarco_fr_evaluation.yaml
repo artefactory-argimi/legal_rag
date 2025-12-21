@@ -1,13 +1,16 @@
 # Legal RAG Evaluation Pipeline - ColBERTv2.0-mmarcoFR
 #
-# This pipeline builds the PLAID index, queries it with generated questions,
+# This pipeline queries a pre-built PLAID index with generated questions
 # and evaluates retrieval quality using pyserini.
+#
+# Prerequisites:
+#   Run colbertv2_mmarco_fr_index.yaml first to build the index.
 #
 # Usage:
 #   task-tracker submit pipelines/colbertv2_mmarco_fr_evaluation.yaml
 
 name: colbertv2_mmarco_fr_evaluation
-description: Build PLAID index with ColBERTv2.0-mmarcoFR, batch query, and evaluate
+description: Batch query ColBERTv2.0-mmarcoFR index and evaluate retrieval
 version: "2.0"
 
 project: legal-rag
@@ -28,9 +31,6 @@ defaults:
 
   # Index configuration
   index_name: colbertv2_mmarco_fr_${subset}_index
-  batch_size: 1024
-  accumulation_size: 32768  # 32 * 1024
-  pool_factor: 1  # 1 = no pooling, higher = more compression
 
   # Query configuration
   k: 100
@@ -42,28 +42,7 @@ defaults:
   output_dir: ${base_dir}/legal-rag/evaluation/colbertv2_mmarco_fr
 
 steps:
-  # Step 0: Build PLAID index
-  - command: "python scripts/indexer.py"
-    arguments:
-      model: "${encoder_model}"
-      dataset: "${dataset}"
-      subset: "${subset}"
-      split: "${split}"
-      batch_size: ${batch_size}
-      accumulation_size: ${accumulation_size}
-      pool_factor: ${pool_factor}
-      index_folder: "${index_dir}"
-      index_name: "${index_name}"
-    gpu_count: 1
-    artifacts:
-      inputs:
-        - path: "${dataset}"
-          type: Dataset
-      outputs:
-        - path: "${index_dir}/${index_name}"
-          type: Dataset
-
-  # Step 1: Batch query the index
+  # Step 0: Batch query the index
   - command: "python scripts/batch_query.py"
     arguments:
       questions: "${questions_dir}"
@@ -91,7 +70,7 @@ steps:
         - path: "${output_dir}/qrels.txt"
           type: Dataset
 
-  # Step 2: Evaluate with pyserini
+  # Step 1: Evaluate with pyserini
   - command: "python -m pyserini.eval.trec_eval -c -m recall.1,5,10,100 ${output_dir}/qrels.txt ${output_dir}/run.txt"
     artifacts:
       inputs:

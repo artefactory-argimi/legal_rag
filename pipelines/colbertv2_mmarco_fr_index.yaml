@@ -1,0 +1,54 @@
+# Legal RAG Index Pipeline - ColBERTv2.0-mmarcoFR
+#
+# This pipeline builds the PLAID index for ColBERTv2.0-mmarcoFR.
+#
+# Usage:
+#   task-tracker submit pipelines/colbertv2_mmarco_fr_index.yaml
+
+name: colbertv2_mmarco_fr_index
+description: Build PLAID index with ColBERTv2.0-mmarcoFR
+version: "2.0"
+
+project: legal-rag
+experiment: legal_rag
+
+defaults:
+  base_dir: /data/workspace/${USER}
+
+  # Dataset configuration
+  dataset: artefactory/Argimi-Legal-French-Jurisprudence
+  subset: constit
+  split: train
+
+  # Model configuration
+  encoder_model: AdrienB134/ColBERTv2.0-mmarcoFR
+
+  # Index configuration
+  index_name: colbertv2_mmarco_fr_${subset}_index
+  batch_size: 1024
+  accumulation_size: 32768  # 32 * 1024
+  pool_factor: 1  # 1 = no pooling, higher = more compression
+
+  # Paths
+  index_dir: ${base_dir}/legal-rag/index
+
+steps:
+  - command: "python scripts/indexer.py"
+    arguments:
+      model: "${encoder_model}"
+      dataset: "${dataset}"
+      subset: "${subset}"
+      split: "${split}"
+      batch_size: ${batch_size}
+      accumulation_size: ${accumulation_size}
+      pool_factor: ${pool_factor}
+      index_folder: "${index_dir}"
+      index_name: "${index_name}"
+    gpu_count: 1
+    artifacts:
+      inputs:
+        - path: "${dataset}"
+          type: Dataset
+      outputs:
+        - path: "${index_dir}/${index_name}"
+          type: Dataset
