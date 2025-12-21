@@ -20,44 +20,32 @@
 """
 # Agent RAG pour la Jurisprudence Constitutionnelle Française
 
-Cette démonstration présente un agent RAG (Retrieval-Augmented Generation) spécialisé
-dans l'analyse de la jurisprudence constitutionnelle française.
+Agent DSPy spécialisé dans l'analyse de la jurisprudence du Conseil constitutionnel.
 
-## Architecture de l'agent
+## Architecture
 
-L'agent combine deux composants principaux :
-1. **Retriever ColBERT** : Recherche sémantique dense utilisant le modèle `maastrichtlawtech/colbert-legal-french`
-2. **LLM Générateur** : Modèle de langage (Mistral, Qwen, etc.) pour synthétiser les réponses
+| Composant | Rôle |
+|-----------|------|
+| **Retriever ColBERT** | Recherche sémantique dense (`maastrichtlawtech/colbert-legal-french`) |
+| **LLM Générateur** | Synthèse des réponses (Mistral, Qwen, etc.) |
 
-## Outils disponibles
+## Outils de l'agent
 
-L'agent dispose de 3 outils pour la recherche documentaire :
-- `search_legal_docs` : Recherche 100 chunks avec leurs extraits (aperçu)
-- `lookup_chunk` : Récupère un chunk spécifique avec son contexte environnant
-- `lookup_legal_doc` : Récupère le document complet (pour analyse approfondie)
-
-## Flux de travail en deux étapes
-
-```
-1. Recherche    : search_legal_docs(query) → 100 chunks avec aperçus
-2. Inspection   : lookup_chunk(chunk_id) → chunk + contexte environnant
-3. (Optionnel)  : lookup_legal_doc(chunk_id) → document complet
-4. Synthèse    : LLM génère la réponse basée sur le contenu récupéré
-```
+| Outil | Description |
+|-------|-------------|
+| `search_legal_docs` | Recherche N chunks (ordre aléatoire pour reranking) |
+| `lookup_chunk` | Récupère un chunk avec contexte environnant |
+| `lookup_legal_doc` | Récupère le document complet |
 """
 
 # %% [markdown]
 """
 # 1. Préparation de l'environnement
 
-Cette cellule installe automatiquement les dépendances nécessaires :
-- Le fichier `requirements.txt` depuis les releases GitHub
-- Le package `legal_rag` (sans ses dépendances car déjà installées)
-
-**Note** : L'installation utilise `uv` si disponible (plus rapide), sinon `pip`.
+Installation automatique des dépendances si `legal_rag` n'est pas installé.
 """
 
-# %% {"tags": ["hide_code", "hide-input"], "hide_input": true}
+# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
 
 # Install dependencies only if legal_rag is not already installed.
 import os
@@ -84,21 +72,15 @@ import legal_rag as _  # noqa: F401
 """
 # 2. Configuration de l'Agent
 
-## Paramètres du générateur (LLM)
-Ces paramètres configurent le modèle de langage qui génère les réponses :
-- `GENERATOR_API_KEY` : Clé API pour accéder au service LLM
-- `GENERATOR_API_BASE` : Endpoint de l'API (Hugging Face, OpenAI, ou serveur local)
-- `GENERATOR_MODEL_ID` : Identifiant du modèle à utiliser
+Modifiez les paramètres ci-dessous pour adapter l'agent à votre environnement.
 
-## Paramètres du retriever (ColBERT)
-Ces paramètres configurent la recherche sémantique :
-- `ENCODER_MODEL_ID` : Modèle d'encodage pour la recherche (doit correspondre à l'index)
-- `INDEX_URI` : URL ou chemin vers l'index pré-construit
-- `SEARCH_K` : Nombre de documents à récupérer par requête
-
-## Paramètres de génération
-- `TEMPERATURE` : Contrôle la créativité (0 = déterministe, 1 = créatif)
-- `MAX_ITERS` : Nombre maximum d'itérations de l'agent (recherche + lookup)
+| Paramètre | Description |
+|-----------|-------------|
+| `GENERATOR_API_BASE` | Endpoint LLM (local `localhost:8000` ou Hugging Face) |
+| `GENERATOR_MODEL_ID` | Modèle de génération (Mistral, Qwen, etc.) |
+| `SEARCH_K` | Nombre de chunks récupérés pour le reranking |
+| `TEMPERATURE` | Créativité (0 = déterministe, 1 = créatif) |
+| `MAX_ITERS` | Iterations max de l'agent (recherche + lookup) |
 """
 
 # %%
@@ -126,10 +108,12 @@ configured_index = None
 
 # %% [markdown]
 """
-# 2.1 Validation et Préparation
+# 3. Validation et Préparation
+
+Cette section télécharge l'index ColBERT et vérifie la connectivité du serveur LLM.
 """
 
-# %% {"tags": ["hide_code", "hide-input"], "hide_input": true}
+# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
 from pathlib import Path
 
 import httpx
@@ -197,20 +181,16 @@ os.environ.setdefault("HF_HUB_TIMEOUT", "60")
 """
 # 4. Construction de l'Agent RAG
 
-L'agent est construit avec la fonction `build_agent` qui initialise :
-1. **Le retriever ColBERT** : Charge le modèle d'encodage et l'index
-2. **Le client LLM** : Configure la connexion au service de génération
-3. **Les 3 outils** : `search_legal_docs`, `lookup_chunk`, `lookup_legal_doc`
+L'agent utilise le workflow défini dans `LegalRAGSignature` :
 
-L'agent utilise un workflow en deux étapes :
-1. **Recherche** : `search_legal_docs` retourne 100 chunks avec aperçus
-2. **Reranking** : L'agent analyse les extraits et classe par pertinence
-3. **Validation** : `lookup_chunk` confirme l'utilité des chunks sélectionnés
-4. **Formulation** : `lookup_legal_doc` récupère le document complet pour la réponse
-5. **Reformulation** : Si aucun résultat pertinent, nouvelle requête (max 3 tentatives)
+```
+Recherche → Reranking → Validation → Formulation (→ Reformulation si nécessaire)
+```
+
+Les instructions et le comportement sont encodés dans les signatures DSPy, pas dans des prompts manuels.
 """
 
-# %% {"tags": ["hide_code", "hide-input"], "hide_input": true}
+# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
 from legal_rag.agent import build_agent
 
 generator_api_key = GENERATOR_API_KEY or None
@@ -238,24 +218,20 @@ agent = build_agent(
 
 Nous testons l'agent avec deux types de questions :
 
-## Question 1 : Hors périmètre (agriculture)
-Une question sans rapport avec la jurisprudence constitutionnelle.
-
-**Comportement attendu** : L'agent détecte que la question est hors périmètre et répond
-sans appeler les outils de recherche.
-
-## Question 2 : Dans le périmètre (QPC)
-Une question précise sur une décision du Conseil constitutionnel.
-
-**Comportement attendu** :
-1. `search_legal_docs` : L'agent formule une requête précise et obtient 100 chunks avec aperçus
-2. **Reranking** : L'agent analyse les extraits et sélectionne les plus pertinents
-3. `lookup_chunk` : L'agent vérifie la pertinence des chunks sélectionnés avec leur contexte
-4. `lookup_legal_doc` : L'agent récupère le document complet pour formuler sa réponse
-5. **Réponse** : L'agent génère une réponse structurée citant la décision et sa date
+| Question | Type | Comportement attendu |
+|----------|------|---------------------|
+| Agriculture | Hors périmètre | Refus poli sans appel d'outils |
+| QPC Eric RAOULT | Dans le périmètre | Recherche → Reranking → Lookup → Réponse structurée |
 """
 
-# %% {"tags": ["hide_code", "hide-input"], "hide_input": true}
+# %% [markdown]
+"""
+## Définition des questions de test
+
+Modifiez cette liste pour tester d'autres questions sur la jurisprudence constitutionnelle.
+"""
+
+# %%
 queries: Iterable[str] | str = [
     # Question hors périmètre - l'agent doit refuser poliment
     "Comment régler l'arrosage goutte-à-goutte de tomates en serre pendant une canicule ?",
@@ -265,11 +241,11 @@ queries: Iterable[str] | str = [
 
 # %% [markdown]
 """
-## Exécution des questions
+## Exécution et résultats
 
 Pour chaque question, l'agent retourne :
 - `prediction.answer` : La réponse textuelle générée
-- `prediction.trajectory` : L'historique des appels d'outils (recherche, lookup, etc.)
+- `prediction.trajectory` : L'historique des appels d'outils (recherche, reranking, lookup)
 """
 
 # %%
@@ -280,5 +256,3 @@ for idx, question in enumerate(queries, start=1):
     rprint(f"[bold green]Réponse[/]\n{prediction.answer}")
     rprint("[bold magenta]Trajectoire[/]")
     ecolab.json(prediction.trajectory)
-
-# %%
