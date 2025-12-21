@@ -6,6 +6,7 @@
 #     "datasets>=3.2.0",
 #     "dspy>=3.0.4",
 #     "etils[eapp,epath]>=1.9.0",
+#     "httpx>=0.27.0",
 # ]
 # ///
 
@@ -19,6 +20,7 @@ from typing import Iterable
 
 import datasets
 import dspy
+import httpx
 from absl import app, logging
 from datasets import load_dataset
 from etils import eapp, epath
@@ -427,15 +429,46 @@ def build_qa_records(
     return list(records)
 
 
-def save_dataset(
-    records: list[tuple], output_dir: epath.Path, overwrite: bool
-) -> datasets.Dataset:
-    output_dir = output_dir.expanduser()
-    if output_dir.exists() and not overwrite:
-        raise FileExistsError(
-            f"{output_dir} already exists. Pass --overwrite to replace the existing dataset."
+def check_lm_health(api_base: str, timeout: float = 10.0) -> None:
+    """Check LM server health before processing. Raises ConnectionError if unhealthy."""
+    base = api_base.rstrip("/")
+    # Try /health first (vLLM, common), then /v1/models (OpenAI-compatible)
+    endpoints = [f"{base}/health", f"{base}/models"]
+    last_error = None
+    for url in endpoints:
+        try:
+            response = httpx.get(url, timeout=timeout)
+            if response.status_code < 500:
+                logging.info("LM server health check passed: %s", url)
+                return
+        except httpx.RequestError as e:
+            last_error = e
+    raise ConnectionError(
+        f"LM server at {api_base} is not reachable. Tried: {endpoints}. "
+        f"Last error: {last_error}"
+    )
+
+
+def validate_dataset_columns(
+    ds: datasets.Dataset, text_column: str, doc_id_column: str
+) -> None:
+    """Validate required columns exist in dataset. Raises ValueError if missing."""
+    missing = []
+    if text_column not in ds.column_names:
+        missing.append(f"text_column='{text_column}'")
+    if doc_id_column not in ds.column_names:
+        missing.append(f"doc_id_column='{doc_id_column}'")
+    if missing:
+        raise ValueError(
+            f"Missing columns: {', '.join(missing)}. "
+            f"Available columns: {ds.column_names}"
         )
-    if output_dir.exists() and overwrite:
+
+
+def save_dataset(records: list[tuple], output_dir: epath.Path) -> datasets.Dataset:
+    output_dir = output_dir.expanduser()
+    # Directory existence already validated in main(), just clean up if needed
+    if output_dir.exists():
         output_dir.rmtree()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -450,6 +483,15 @@ def save_dataset(
 
 
 def main(cfg: GenerationConfig) -> None:
+    # Fail fast: validate all preconditions before heavy processing
+    output_dir = cfg.output_dir.expanduser()
+    if output_dir.exists() and not cfg.overwrite:
+        raise FileExistsError(
+            f"{output_dir} already exists. Pass --overwrite to replace the existing dataset."
+        )
+
+    check_lm_health(cfg.api_base)
+
     logging.info(
         "Loading dataset=%s config=%s split=%s", cfg.dataset, cfg.config, cfg.split
     )
@@ -457,10 +499,16 @@ def main(cfg: GenerationConfig) -> None:
         ds = load_dataset(cfg.dataset, cfg.config, split=cfg.split)
     else:
         ds = load_dataset(cfg.dataset, split=cfg.split)
+
+    validate_dataset_columns(ds, cfg.text_column, cfg.doc_id_column)
+
     if cfg.seed is not None:
         ds = ds.shuffle(seed=cfg.seed)
     if cfg.sample_limit is not None and cfg.sample_limit > 0:
         ds = ds.select(range(min(cfg.sample_limit, len(ds))))
+
+    if len(ds) == 0:
+        raise ValueError("Dataset is empty after filtering/sampling.")
 
     lm = dspy.LM(
         f"openai/{cfg.model}",
@@ -484,7 +532,7 @@ def main(cfg: GenerationConfig) -> None:
         log_every=cfg.log_every,
     )
 
-    ds_out = save_dataset(records, cfg.output_dir, cfg.overwrite)
+    ds_out = save_dataset(records, output_dir)
     logging.info("Saved %d rows to %s", len(ds_out), cfg.output_dir)
     logging.info(
         "Inspect with: from datasets import load_from_disk; ds = load_from_disk('%s'); print(ds[0])",
