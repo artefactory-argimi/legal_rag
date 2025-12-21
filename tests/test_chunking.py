@@ -2,13 +2,21 @@
 
 import os
 
-# Force CPU-only mode for tests
+# Force CPU-only mode and enable MPS fallback for tests
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 from absl.testing import absltest
 from chonkie import SemanticChunker, SentenceChunker
 
-from legal_rag.indexer import FIRST_CHUNK_HEADER, chunk_document, preprocess
+from legal_rag.chunking import (
+    Chunk,
+    ChunkConfig,
+    DocumentChunkCache,
+    build_chunker,
+    chunk_document,
+)
+from legal_rag.indexer import preprocess
 from legal_rag.tools import parse_chunk_id
 
 
@@ -56,8 +64,9 @@ class TestChunkDocumentWithSentenceChunker(absltest.TestCase):
             chunker=self.chunker,
         )
         self.assertGreaterEqual(len(chunks), 1)
-        self.assertEqual(chunks[0][0], "DOC1-0")
-        self.assertIn("Title", chunks[0][1])
+        self.assertIsInstance(chunks[0], Chunk)
+        self.assertEqual(chunks[0].chunk_id, "DOC1-0")
+        self.assertIn("Title", chunks[0].text)
 
     def test_multiple_chunks(self):
         long_content = "Sentence one. " * 200
@@ -69,11 +78,11 @@ class TestChunkDocumentWithSentenceChunker(absltest.TestCase):
             chunker=self.chunker,
         )
         self.assertGreater(len(chunks), 1)
-        for idx, (chunk_id, _) in enumerate(chunks):
-            self.assertEqual(chunk_id, f"DOC2-{idx}")
-        self.assertIn("Title", chunks[0][1])
+        for idx, chunk in enumerate(chunks):
+            self.assertEqual(chunk.chunk_id, f"DOC2-{idx}")
+        self.assertIn("Title", chunks[0].text)
         if len(chunks) > 1:
-            self.assertNotIn("Title", chunks[1][1])
+            self.assertNotIn("Title", chunks[1].text)
 
     def test_empty_document(self):
         chunks = chunk_document(
@@ -84,10 +93,9 @@ class TestChunkDocumentWithSentenceChunker(absltest.TestCase):
             chunker=self.chunker,
         )
         self.assertEqual(len(chunks), 1)
-        self.assertEqual(chunks[0][0], "EMPTY-0")
+        self.assertEqual(chunks[0].chunk_id, "EMPTY-0")
 
     def test_long_content_produces_multiple_chunks(self):
-        # Verify that long content with sentences produces multiple chunks
         long_content = "This is a sentence. " * 200
         chunks = chunk_document(
             content=long_content,
@@ -106,8 +114,8 @@ class TestChunkDocumentWithSentenceChunker(absltest.TestCase):
             decision_date="2024-05-15",
             chunker=self.chunker,
         )
-        self.assertIn("Test Title", chunks[0][1])
-        self.assertIn("2024-05-15", chunks[0][1])
+        self.assertIn("Test Title", chunks[0].text)
+        self.assertIn("2024-05-15", chunks[0].text)
 
     def test_no_header_when_no_metadata(self):
         chunks = chunk_document(
@@ -117,7 +125,7 @@ class TestChunkDocumentWithSentenceChunker(absltest.TestCase):
             decision_date=None,
             chunker=self.chunker,
         )
-        self.assertNotIn("Titre:", chunks[0][1])
+        self.assertNotIn("Titre:", chunks[0].text)
 
     def test_chunk_ids_are_sequential(self):
         long_content = "A sentence. " * 500
@@ -129,8 +137,19 @@ class TestChunkDocumentWithSentenceChunker(absltest.TestCase):
             chunker=self.chunker,
         )
         expected_ids = [f"SEQ-{i}" for i in range(len(chunks))]
-        actual_ids = [chunk_id for chunk_id, _ in chunks]
+        actual_ids = [chunk.chunk_id for chunk in chunks]
         self.assertEqual(actual_ids, expected_ids)
+
+    def test_chunk_has_correct_doc_id(self):
+        chunks = chunk_document(
+            content="Some text.",
+            doc_id="DOC5",
+            title=None,
+            decision_date=None,
+            chunker=self.chunker,
+        )
+        for chunk in chunks:
+            self.assertEqual(chunk.doc_id, "DOC5")
 
 
 class TestChunkDocumentWithSemanticChunker(absltest.TestCase):
@@ -154,8 +173,9 @@ class TestChunkDocumentWithSemanticChunker(absltest.TestCase):
             chunker=self.chunker,
         )
         self.assertGreaterEqual(len(chunks), 1)
-        self.assertEqual(chunks[0][0], "DOC1-0")
-        self.assertIn("Title", chunks[0][1])
+        self.assertIsInstance(chunks[0], Chunk)
+        self.assertEqual(chunks[0].chunk_id, "DOC1-0")
+        self.assertIn("Title", chunks[0].text)
 
     def test_multiple_chunks(self):
         long_content = "Sentence one about legal matters. " * 200
@@ -167,11 +187,11 @@ class TestChunkDocumentWithSemanticChunker(absltest.TestCase):
             chunker=self.chunker,
         )
         self.assertGreater(len(chunks), 1)
-        for idx, (chunk_id, _) in enumerate(chunks):
-            self.assertEqual(chunk_id, f"DOC2-{idx}")
-        self.assertIn("Title", chunks[0][1])
+        for idx, chunk in enumerate(chunks):
+            self.assertEqual(chunk.chunk_id, f"DOC2-{idx}")
+        self.assertIn("Title", chunks[0].text)
         if len(chunks) > 1:
-            self.assertNotIn("Title", chunks[1][1])
+            self.assertNotIn("Title", chunks[1].text)
 
     def test_empty_document(self):
         chunks = chunk_document(
@@ -182,7 +202,7 @@ class TestChunkDocumentWithSemanticChunker(absltest.TestCase):
             chunker=self.chunker,
         )
         self.assertEqual(len(chunks), 1)
-        self.assertEqual(chunks[0][0], "EMPTY-0")
+        self.assertEqual(chunks[0].chunk_id, "EMPTY-0")
 
     def test_long_content_produces_multiple_chunks(self):
         long_content = "This is a legal sentence about constitutional law. " * 200
@@ -203,8 +223,8 @@ class TestChunkDocumentWithSemanticChunker(absltest.TestCase):
             decision_date="2024-05-15",
             chunker=self.chunker,
         )
-        self.assertIn("Test Title", chunks[0][1])
-        self.assertIn("2024-05-15", chunks[0][1])
+        self.assertIn("Test Title", chunks[0].text)
+        self.assertIn("2024-05-15", chunks[0].text)
 
     def test_chunk_ids_are_sequential(self):
         long_content = "A legal sentence about law. " * 500
@@ -216,7 +236,7 @@ class TestChunkDocumentWithSemanticChunker(absltest.TestCase):
             chunker=self.chunker,
         )
         expected_ids = [f"SEQ-{i}" for i in range(len(chunks))]
-        actual_ids = [chunk_id for chunk_id, _ in chunks]
+        actual_ids = [chunk.chunk_id for chunk in chunks]
         self.assertEqual(actual_ids, expected_ids)
 
 
@@ -262,6 +282,161 @@ class TestPreprocess(absltest.TestCase):
         }
         result = preprocess(sample, doc_id_column="custom_id")
         self.assertEqual(result["doc_id"], "CUSTOM123")
+
+
+class TestBuildChunker(absltest.TestCase):
+    """Tests for build_chunker factory function."""
+
+    def test_build_semantic_chunker(self):
+        config = ChunkConfig(
+            chunker_type="semantic",
+            chunk_tokenizer="minishlab/potion-base-8M",
+            chunk_size=256,
+        )
+        chunker = build_chunker(config)
+        self.assertIsInstance(chunker, SemanticChunker)
+
+    def test_build_sentence_chunker(self):
+        config = ChunkConfig(
+            chunker_type="sentence",
+            chunk_tokenizer="character",
+            chunk_size=256,
+        )
+        chunker = build_chunker(config)
+        self.assertIsInstance(chunker, SentenceChunker)
+
+
+class TestDocumentChunkCache(absltest.TestCase):
+    """Tests for DocumentChunkCache class."""
+
+    def setUp(self):
+        super().setUp()
+        # Create a simple mock dataset as a list of dicts
+        self.dataset = [
+            {
+                "id": "DOC1",
+                "content": "This is the first document. It has some content.",
+                "title": "Document One",
+                "decision_date": "2024-01-01",
+                "juridiction": "Court A",
+                "formation": "F1",
+                "solution": "S1",
+                "applied_law": "L1",
+            },
+            {
+                "id": "DOC2",
+                "content": "This is the second document. " * 100,
+                "title": "Document Two",
+                "decision_date": "2024-02-02",
+                "juridiction": "Court B",
+                "formation": "F2",
+                "solution": "S2",
+                "applied_law": "L2",
+            },
+        ]
+        self.cache = DocumentChunkCache(
+            dataset=self.dataset,
+            doc_id_column="id",
+        )
+
+    def test_get_chunks_returns_chunks(self):
+        chunks = self.cache.get_chunks("DOC1")
+        self.assertIsNotNone(chunks)
+        self.assertGreater(len(chunks), 0)
+        self.assertIsInstance(chunks[0], Chunk)
+
+    def test_get_chunks_caches_result(self):
+        self.cache.get_chunks("DOC1")
+        stats1 = self.cache.stats()
+        self.assertEqual(stats1["num_docs"], 1)
+
+        self.cache.get_chunks("DOC1")
+        stats2 = self.cache.stats()
+        self.assertEqual(stats2["num_docs"], 1)
+
+    def test_get_chunks_returns_none_for_missing_doc(self):
+        chunks = self.cache.get_chunks("NONEXISTENT")
+        self.assertIsNone(chunks)
+
+    def test_get_chunk_by_id(self):
+        chunk = self.cache.get_chunk("DOC1-0")
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk.chunk_id, "DOC1-0")
+        self.assertEqual(chunk.doc_id, "DOC1")
+
+    def test_get_chunk_returns_none_for_invalid_id(self):
+        chunk = self.cache.get_chunk("INVALID")
+        self.assertIsNone(chunk)
+
+    def test_get_chunk_returns_none_for_out_of_range_index(self):
+        chunk = self.cache.get_chunk("DOC1-999")
+        self.assertIsNone(chunk)
+
+    def test_get_chunk_text(self):
+        text = self.cache.get_chunk_text("DOC1-0")
+        self.assertIsNotNone(text)
+        self.assertIsInstance(text, str)
+
+    def test_get_document_metadata(self):
+        metadata = self.cache.get_document_metadata("DOC1")
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata["title"], "Document One")
+        self.assertEqual(metadata["decision_date"], "2024-01-01")
+
+    def test_get_document_metadata_returns_none_for_missing(self):
+        metadata = self.cache.get_document_metadata("NONEXISTENT")
+        self.assertIsNone(metadata)
+
+    def test_clear_cache(self):
+        self.cache.get_chunks("DOC1")
+        self.cache.get_chunks("DOC2")
+        self.assertEqual(self.cache.stats()["num_docs"], 2)
+
+        self.cache.clear()
+        self.assertEqual(self.cache.stats()["num_docs"], 0)
+
+    def test_stats(self):
+        self.cache.get_chunks("DOC1")
+        stats = self.cache.stats()
+        self.assertIn("num_docs", stats)
+        self.assertIn("num_chunks", stats)
+        self.assertEqual(stats["num_docs"], 1)
+
+    def test_chunks_have_correct_structure(self):
+        chunks = self.cache.get_chunks("DOC1")
+        for i, chunk in enumerate(chunks):
+            self.assertEqual(chunk.doc_id, "DOC1")
+            self.assertEqual(chunk.chunk_idx, i)
+            self.assertEqual(chunk.chunk_id, f"DOC1-{i}")
+            self.assertIsInstance(chunk.text, str)
+
+    def test_multiple_docs_cached_independently(self):
+        self.cache.get_chunks("DOC1")
+        self.cache.get_chunks("DOC2")
+
+        stats = self.cache.stats()
+        self.assertEqual(stats["num_docs"], 2)
+
+        # Verify chunks are different
+        chunks1 = self.cache.get_chunks("DOC1")
+        chunks2 = self.cache.get_chunks("DOC2")
+        self.assertNotEqual(chunks1[0].text, chunks2[0].text)
+
+    def test_long_document_produces_multiple_chunks(self):
+        chunks = self.cache.get_chunks("DOC2")
+        self.assertGreater(len(chunks), 1)
+
+    def test_chunk_text_matches_get_chunk(self):
+        chunks = self.cache.get_chunks("DOC1")
+        for chunk in chunks:
+            retrieved = self.cache.get_chunk(chunk.chunk_id)
+            self.assertEqual(chunk.text, retrieved.text)
+
+    def test_first_chunk_contains_header_with_title(self):
+        chunks = self.cache.get_chunks("DOC1")
+        first_chunk = chunks[0]
+        self.assertIn("Document One", first_chunk.text)
+        self.assertIn("2024-01-01", first_chunk.text)
 
 
 if __name__ == "__main__":

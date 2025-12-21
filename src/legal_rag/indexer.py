@@ -5,11 +5,16 @@ from functools import partial
 import grain
 import toolz as tlz
 from absl import logging
-from chonkie import SemanticChunker, SentenceChunker
 from datasets import load_dataset
 from etils import epath
 from pylate import indexes, models
 
+from legal_rag.chunking import (
+    FIRST_CHUNK_HEADER,
+    ChunkConfig,
+    build_chunker,
+    chunk_document,
+)
 from legal_rag.colbert_utils import fix_colbert_embeddings
 from legal_rag.tools import DEFAULT_DOC_ID_COLUMN, TEMPLATE_DOCUMENT
 
@@ -52,50 +57,6 @@ class ScriptConfig:
     chunk_tokenizer: str = "minishlab/potion-base-32M"
     # Force re-indexing even if output already exists (default: skip if exists)
     force: bool = False
-
-
-FIRST_CHUNK_HEADER = """Titre: {title} | Date: {decision_date}
-"""
-
-
-def chunk_document(
-    content: str,
-    doc_id: str,
-    title: str | None,
-    decision_date: str | None,
-    chunker: SentenceChunker,
-) -> list[tuple[str, str]]:
-    """Chunk a document into multiple indexed segments.
-
-    Args:
-        content: The document text content.
-        doc_id: The parent document ID.
-        title: Optional title for first chunk header.
-        decision_date: Optional date for first chunk header.
-        chunker: Pre-configured SentenceChunker instance.
-
-    Returns:
-        List of (chunk_id, chunk_text) tuples where chunk_id = "{doc_id}-{idx}".
-    """
-    chunks = chunker.chunk(content or "")
-    results = []
-
-    for idx, chunk in enumerate(chunks):
-        chunk_id = f"{doc_id}-{idx}"
-        if idx == 0 and (title or decision_date):
-            header = FIRST_CHUNK_HEADER.format(
-                title=title or "",
-                decision_date=decision_date or "",
-            )
-            text = header + chunk.text
-        else:
-            text = chunk.text
-        results.append((chunk_id, text))
-
-    if not results:
-        results.append((f"{doc_id}-0", ""))
-
-    return results
 
 
 def preprocess(sample, doc_id_column: str = DEFAULT_DOC_ID_COLUMN):
@@ -174,34 +135,19 @@ def build_index(cfg: ScriptConfig):
         nbits=cfg.nbits,
     )
 
-    if cfg.chunker_type == "semantic":
-        chunker = SemanticChunker(
-            embedding_model=cfg.chunk_tokenizer,
-            chunk_size=cfg.chunk_size,
-            min_sentences_per_chunk=1,
-            min_characters_per_sentence=12,
-            delim=[". ", "! ", "? ", "\n\n"],
-        )
-        logging.info(
-            "Initialized SemanticChunker with chunk_size=%d, embedding_model=%s",
-            cfg.chunk_size,
-            cfg.chunk_tokenizer,
-        )
-    else:
-        chunker = SentenceChunker(
-            tokenizer=cfg.chunk_tokenizer,
-            chunk_size=cfg.chunk_size,
-            chunk_overlap=cfg.chunk_overlap,
-            min_sentences_per_chunk=1,
-            min_characters_per_sentence=12,
-            delim=[". ", "! ", "? ", "\n\n"],
-        )
-        logging.info(
-            "Initialized SentenceChunker with chunk_size=%d, overlap=%d, tokenizer=%s",
-            cfg.chunk_size,
-            cfg.chunk_overlap,
-            cfg.chunk_tokenizer,
-        )
+    chunk_config = ChunkConfig(
+        chunk_size=cfg.chunk_size,
+        chunk_overlap=cfg.chunk_overlap,
+        chunker_type=cfg.chunker_type,
+        chunk_tokenizer=cfg.chunk_tokenizer,
+    )
+    chunker = build_chunker(chunk_config)
+    logging.info(
+        "Initialized %s chunker with chunk_size=%d, tokenizer=%s",
+        cfg.chunker_type,
+        cfg.chunk_size,
+        cfg.chunk_tokenizer,
+    )
 
     logging.info("Loading dataset config=%s split=%s", config_name, split_name)
     hf_ds = load_dataset(cfg.dataset, config_name, split=split_name)
@@ -215,13 +161,15 @@ def build_index(cfg: ScriptConfig):
     def generate_chunks():
         """Yield (chunk_id, chunk_text) pairs from all documents."""
         for item in ds:
-            yield from chunk_document(
+            chunks = chunk_document(
                 content=item["content"],
                 doc_id=str(item["doc_id"]),
                 title=item["title"],
                 decision_date=item["decision_date"],
                 chunker=chunker,
             )
+            for chunk in chunks:
+                yield chunk.chunk_id, chunk.text
 
     def encode_and_index_batch(doc_ids: list[str], docs: list[str]) -> int:
         """Encode documents and add them to the index.
