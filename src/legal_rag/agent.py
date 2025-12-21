@@ -28,55 +28,32 @@ DEFAULT_CONFIG = "juri"
 DEFAULT_SPLIT = "train"
 
 
-class RerankChunks(dspy.Signature):
-    """Analyse les résultats de recherche et sélectionne les chunks les plus pertinents.
+class LegalRAGSignature(dspy.Signature):
+    """Agent RAG spécialisé en jurisprudence constitutionnelle française.
 
-    Tu reçois une liste de chunks avec leurs extraits. Analyse chaque extrait et
-    sélectionne les chunk_ids les plus pertinents pour répondre à la question.
-    Ordonne-les du plus pertinent au moins pertinent.
+    Domaine couvert: décisions du Conseil constitutionnel, QPC, articles 61/61-1.
+    Hors périmètre: agriculture, technique, autres branches du droit non constitutionnel.
+    Pour les questions hors périmètre, répondre: "Le domaine demandé n'est pas couvert."
+
+    Workflow obligatoire:
+    1. Recherche avec search_legal_docs (chunks en ordre aléatoire, ensemble non ordonné)
+    2. Analyse et reranking de TOUS les extraits par pertinence avant lookup
+    3. Validation avec lookup_chunk sur les 3-5 chunks les plus pertinents
+    4. Récupération du document complet avec lookup_legal_doc pour la réponse finale
+    5. Reformulation de la requête si aucun résultat pertinent (max 3 tentatives)
     """
 
-    question: str = dspy.InputField(desc="La question posée par l'utilisateur")
-    search_results: str = dspy.InputField(
-        desc="Résultats de recherche avec chunk_id, score et extrait de texte"
-    )
-    selected_chunk_ids: list[str] = dspy.OutputField(
-        desc="Liste ordonnée des chunk_ids les plus pertinents (max 10), "
-        "du plus pertinent au moins pertinent"
-    )
-    reasoning: str = dspy.OutputField(
-        desc="Explication du choix des chunks sélectionnés"
-    )
-
-
-class SynthesizeAnswer(dspy.Signature):
-    """Synthétise une réponse à partir des chunks analysés.
-
-    Utilise les informations des chunks pour répondre à la question.
-    Cite les sources (chunk_ids ou doc_ids) utilisées dans la réponse.
-    """
-
-    question: str = dspy.InputField(desc="La question posée")
-    chunks_content: str = dspy.InputField(
-        desc="Contenu des chunks sélectionnés avec contexte"
+    question: str = dspy.InputField(
+        desc="Question juridique sur la jurisprudence constitutionnelle française. "
+        "Peut contenir: noms de parties, numéros QPC, dates, articles de loi."
     )
     answer: str = dspy.OutputField(
-        desc="Réponse complète et bien structurée à la question"
+        desc="Réponse structurée en français citant explicitement la jurisprudence "
+        "(titre ou référence, date de la décision). "
+        "Présente les éléments juridiques: faits, fondement, dispositif, articles cités. "
+        "Basée uniquement sur les documents récupérés, jamais sur la mémoire du modèle. "
+        "Si aucune décision pertinente n'est trouvée, l'indiquer clairement."
     )
-    sources: list[str] = dspy.OutputField(
-        desc="Liste des chunk_ids ou doc_ids utilisés comme sources"
-    )
-
-
-DEFAULT_INSTRUCTIONS = (
-    "Tu es un agent juridique spécialisé dans la recherche documentaire française. "
-    "Workflow en deux étapes:\n"
-    "1. Appelle search_legal_docs pour obtenir 100 chunks avec leurs extraits.\n"
-    "2. Analyse les extraits et appelle lookup_chunk sur les chunks les plus pertinents "
-    "(avec contexte environnant) pour les examiner en détail.\n"
-    "3. Si tu as besoin du document complet, appelle lookup_legal_doc.\n"
-    "Base ta réponse sur le texte récupéré et cite les document IDs utilisés."
-)
 
 
 def build_language_model(
@@ -131,19 +108,14 @@ class LegalReActAgent(dspy.Module):
         lookup_chunk_tool,
         lookup_doc_tool,
         max_iters: int = 6,
-        instructions: str = DEFAULT_INSTRUCTIONS,
     ) -> None:
         super().__init__()
         self.search_tool = search_tool
         self.lookup_chunk_tool = lookup_chunk_tool
         self.lookup_doc_tool = lookup_doc_tool
 
-        signature = dspy.Signature(
-            "question -> answer:str",
-            instructions=instructions,
-        )
         self.react = dspy.ReAct(
-            signature,
+            LegalRAGSignature,
             tools=[self.search_tool, self.lookup_chunk_tool, self.lookup_doc_tool],
             max_iters=max_iters,
         )
@@ -224,7 +196,6 @@ def build_agent(
     api_base: str | None = None,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
-    instructions: str = DEFAULT_INSTRUCTIONS,
     max_iters: int = 6,
     dataset_config: str = DEFAULT_CONFIG,
 ) -> LegalReActAgent:
@@ -261,13 +232,13 @@ def build_agent(
     # Create tool wrappers with clean signatures for DSPy introspection.
     # Using closures instead of functools.partial preserves proper function signatures.
     def search_legal_docs(query: str) -> str:
-        """Search for legal documents and return chunk IDs with scores and previews.
+        """Recherche des documents juridiques. Retourne des chunks en ordre aléatoire.
 
         Args:
-            query: The search query string describing what legal content to find.
+            query: Requête spécifique avec noms, références QPC, dates ou notions clés.
 
         Returns:
-            Formatted search results with chunk IDs, scores, and content previews.
+            Liste de chunks avec extraits (ensemble non ordonné à analyser).
         """
         return _search_legal_docs(
             query=query,
@@ -278,13 +249,13 @@ def build_agent(
         )
 
     def lookup_chunk(chunk_id: str) -> str:
-        """Retrieve a specific chunk with surrounding context.
+        """Récupère un chunk avec son contexte environnant pour vérifier sa pertinence.
 
         Args:
-            chunk_id: The chunk ID in format "docid-chunkidx" (e.g., "JURITEXT000007022836-0").
+            chunk_id: ID au format "docid-chunkidx" (ex: "JURITEXT000007022836-0").
 
         Returns:
-            The chunk text with surrounding context for detailed analysis.
+            Texte du chunk avec contexte.
         """
         return _lookup_chunk(
             chunk_id=chunk_id,
@@ -294,13 +265,13 @@ def build_agent(
         )
 
     def lookup_legal_doc(chunk_id: str) -> str:
-        """Retrieve the full document text from a chunk ID.
+        """Récupère le document complet avec métadonnées pour la réponse finale.
 
         Args:
-            chunk_id: The chunk ID in format "docid-chunkidx" (e.g., "JURITEXT000007022836-0").
+            chunk_id: ID au format "docid-chunkidx".
 
         Returns:
-            Complete document text with metadata for final answer formulation.
+            Document complet (titre, date, juridiction, contenu).
         """
         return _lookup_legal_doc(
             chunk_id=chunk_id,
@@ -313,5 +284,4 @@ def build_agent(
         lookup_chunk,
         lookup_legal_doc,
         max_iters=max_iters,
-        instructions=instructions,
     )
