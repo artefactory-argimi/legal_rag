@@ -2,7 +2,6 @@
 
 from etils import epath
 from pylate import indexes, models, retrieve
-from transformers import AutoConfig
 
 from legal_rag.colbert_utils import fix_colbert_embeddings
 
@@ -14,33 +13,11 @@ DEFAULT_INDEX_NAME = "legal_french_index"
 def build_encoder(
     encoder_model: str = DEFAULT_ENCODER_MODEL,
 ) -> models.ColBERT:
-    """Load ColBERT by wrapping a HF transformer into a SentenceTransformer + Dense."""
+    """Load ColBERT using PyLate's native loading (same as indexer)."""
     print(f"[legal_rag] Loading encoder from {encoder_model}")
-    from sentence_transformers import models as st_models
-
-    hf_cfg = AutoConfig.from_pretrained(
-        encoder_model,
-        trust_remote_code=True,
-    )
-    hidden = getattr(hf_cfg, "hidden_size", None) or getattr(hf_cfg, "dim", 768)
-
-    transformer = st_models.Transformer(
-        encoder_model,
-        max_seq_length=512,
-        model_args={"trust_remote_code": True},
-    )
-    dense = st_models.Dense(
-        in_features=hidden,
-        out_features=128,
-        bias=False,
-        activation_function=None,
-    )
-    modules = [transformer, dense]
-
     encoder = models.ColBERT(
-        modules=modules,
+        model_name_or_path=encoder_model,
         document_length=496,
-        tokenizer_kwargs={"use_fast": False, "trust_remote_code": True},
     )
     return fix_colbert_embeddings(encoder)
 

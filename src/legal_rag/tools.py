@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 from pylate import models, retrieve
 
 from legal_rag.chunking import DocumentChunkCache
@@ -186,11 +188,13 @@ def search_legal_docs(
     if not search_results:
         return "No results found for your query."
 
+    # Shuffle results to treat them as an unordered set (no PLAID score bias)
+    random.shuffle(search_results)
+
     formatted = []
-    for idx, res in enumerate(search_results):
+    for res in search_results:
         chunk_id = res["id"]
-        score = res["score"]
-        doc_id, chunk_idx = parse_chunk_id(chunk_id)
+        doc_id, _ = parse_chunk_id(chunk_id)
 
         if chunk_cache is not None:
             chunk = chunk_cache.get_chunk(chunk_id)
@@ -201,19 +205,14 @@ def search_legal_docs(
                 if len(chunk.text) > max_preview_chars:
                     chunk_text += "..."
                 formatted.append(
-                    f"[{idx}] chunk_id={chunk_id} score={score:.4f}\n"
+                    f"chunk_id={chunk_id}\n"
                     f"    Titre: {metadata['title'] or 'N/A'} | "
                     f"Date: {metadata['decision_date'] or 'N/A'}\n"
                     f"    Extrait: {chunk_text}"
                 )
             else:
-                formatted.append(
-                    f"[{idx}] chunk_id={chunk_id} score={score:.4f} [chunk not found]"
-                )
+                formatted.append(f"chunk_id={chunk_id} [chunk not found]")
         else:
-            formatted.append(
-                f"[{idx}] chunk_id={chunk_id} (doc={doc_id}, chunk={chunk_idx}) "
-                f"score={score:.4f}"
-            )
+            formatted.append(f"chunk_id={chunk_id}")
 
     return "\n\n".join(formatted)

@@ -57,31 +57,27 @@ Cette cellule installe automatiquement les dépendances nécessaires :
 **Note** : L'installation utilise `uv` si disponible (plus rapide), sinon `pip`.
 """
 
-# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
+# %% {"tags": ["hide_code", "hide-input"], "hide_input": true}
 
-# Install dependencies (requirements.txt) and legal_rag (no deps). Safe for Colab/Jupyter.
+# Install dependencies only if legal_rag is not already installed.
+import os
 import shutil
 import subprocess
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 
-REQ_FILE = Path("requirements.txt")
-REQ_URL = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/requirements.txt"
-REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"  # change if you fork
-UV_BIN = shutil.which("uv")
-PIP_CMD = [UV_BIN, "pip"] if UV_BIN else [sys.executable, "-m", "pip"]
-FORCE_FLAGS = ["--upgrade", "--force-reinstall"]
+# Enable CPU fallback for unsupported MPS ops (must be set before PyTorch import).
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+if find_spec("legal_rag") is None:
+    REQ_URL = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/requirements.txt"
+    REPO_URL = "https://github.com/artefactory-argimi/legal_rag.git"
+    UV_BIN = shutil.which("uv")
+    PIP_CMD = [UV_BIN, "pip"] if UV_BIN else [sys.executable, "-m", "pip"]
+    subprocess.check_call([*PIP_CMD, "install", "-r", REQ_URL])
+    subprocess.check_call([*PIP_CMD, "install", "--no-deps", f"git+{REPO_URL}"])
 
-def _run(cmd: list[str]) -> None:
-    subprocess.check_call(cmd)
-
-
-# Install full dependencies (with deps) from published requirements, then install legal_rag sans deps.
-_run([*PIP_CMD, "install", *FORCE_FLAGS, "-r", REQ_URL])
-_run([*PIP_CMD, "install", *FORCE_FLAGS, "--no-deps", f"git+{REPO_URL}"])
-
-# Verify import
 import legal_rag as _  # noqa: F401
 
 # %% [markdown]
@@ -112,13 +108,15 @@ import os
 DEFAULT_TOKEN = os.environ.get("HF_API_TOKEN", "")
 GENERATOR_API_KEY = DEFAULT_TOKEN  # @param {type:"string"}
 GENERATOR_API_BASE = "http://localhost:8000/v1"  # @param ["https://router.huggingface.co/v1", "https://api.openai.com/v1", "http://localhost:8000/v1"]  # noqa: E501
-GENERATOR_MODEL_ID = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param ["Qwen/Qwen3-4B-Thinking-2507", "mistralai/Mistral-Small-3.1-24B-Instruct-2503", "HuggingFaceTB/SmolLM3-3B"]  # noqa: E501
+GENERATOR_MODEL_ID = "mistralai/Magistral-Small-2509"  # @param ["mistralai/Magistral-Small-2509", "Qwen/Qwen3-4B-Thinking-2507", "HuggingFaceTB/SmolLM3-3B"]  # noqa: E501
 
 # === Paramètres du Retriever (ColBERT) ===
 ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"  # @param {type:"string"}
 INDEX_URI = "https://github.com/artefactory-argimi/legal_rag/releases/download/data-juri-v1/index.zip"  # @param {type:"string"}
 INDEX_PATH = "./downloads/index_legal_constit/"  # @param {type:"string"}
-SEARCH_K = 100  # @param {type:"integer"}
+INDEX_NAME = "colbert_legal_french_constit_index"  # @param {type:"string"}
+DATASET_CONFIG = "constit"  # @param ["constit", "juri", "cetat"] {type:"string"}
+SEARCH_K = 20  # @param {type:"integer"}
 
 # === Paramètres de Génération ===
 TEMPERATURE = 0.2  # @param {type:"number"}
@@ -127,20 +125,46 @@ MAX_ITERS = 4  # @param {type:"integer"}
 # === Instructions système de l'agent ===
 # Ces instructions définissent le comportement de l'agent : comment utiliser les outils,
 # quand reformuler les requêtes, et comment structurer les réponses.
-INSTRUCTIONS = """Tu es un agent RAG spécialisé en jurisprudence constitutionnelle française (sous-ensemble 'constit' du jeu artefactory/Argimi-Legal-French-Jurisprudence).
+INSTRUCTIONS = f"""Tu es un agent RAG spécialisé en jurisprudence constitutionnelle française (sous-ensemble 'constit' du jeu artefactory/Argimi-Legal-French-Jurisprudence).
+
 Outils disponibles:
-- search_legal_docs(query="…"): Retourne 100 chunks avec leurs extraits. Exemple: search_legal_docs(query="QPC extradition écrou liberté individuelle 2016").
-- lookup_chunk(chunk_id="…"): Récupère un chunk avec son contexte environnant pour vérifier sa pertinence. Exemple: lookup_chunk(chunk_id="JURITEXT000007022836-0").
-- lookup_legal_doc(chunk_id="…"): Récupère le document complet pour formuler la réponse finale. Exemple: lookup_legal_doc(chunk_id="JURITEXT000007022836-0").
+- search_legal_docs(query="…"): Retourne {SEARCH_K} chunks avec leurs extraits (ordre aléatoire, ensemble non ordonné).
+- lookup_chunk(chunk_id="…"): Récupère un chunk avec son contexte environnant pour vérifier sa pertinence.
+- lookup_legal_doc(chunk_id="…"): Récupère le document complet pour formuler la réponse finale.
+
 Workflow obligatoire:
-1. Appelle search_legal_docs(query="…") pour obtenir 100 chunks avec extraits.
-2. Analyse les extraits retournés et classe-les par pertinence (reranking).
-3. Appelle lookup_chunk(chunk_id="…") sur les chunks les plus prometteurs pour confirmer leur utilité.
+1. Appelle search_legal_docs(query="…") pour obtenir {SEARCH_K} chunks avec extraits.
+2. RERANKING OBLIGATOIRE: Les chunks sont retournés dans un ordre aléatoire (ensemble non ordonné).
+   Tu DOIS analyser TOUS les extraits et les classer par pertinence selon ces critères:
+   - Correspondance avec les termes spécifiques de la question (noms, dates, références QPC/articles)
+   - Pertinence du contexte juridique (type de décision, juridiction, matière)
+   - Qualité de l'extrait pour répondre à la question posée
+3. Appelle lookup_chunk(chunk_id="…") uniquement sur les 3-5 chunks les plus pertinents après ton analyse.
 4. Si un chunk confirme un document pertinent, appelle lookup_legal_doc(chunk_id="…") pour obtenir le document complet et formuler ta réponse.
 5. Si aucun chunk n'est pertinent, reformule la requête et relance search_legal_docs (max 3 tentatives).
+
 Important: N'utilise lookup_legal_doc que pour formuler la réponse finale, jamais pour la recherche. Le document complet ne doit être lu qu'après confirmation de sa pertinence via lookup_chunk.
 Les IDs retournés par search_legal_docs sont des chunk IDs au format "docid-chunkidx" (ex: "JURITEXT000007022836-0"). Toujours réutiliser tel quel le chunk_id renvoyé.
-Pour chaque requête, formule un libellé de recherche précis: inclure le nom de la partie principale, la date (ou l'année) de la décision, la formation « Conseil constitutionnel », la nature de la question (QPC, contrôle a priori), les articles ou notions clés (ex. extradition, écrou, liberté individuelle), et un verbe d'action (contester, encadrer, garantir). Évite les formulations vagues; préfère les combinaisons de termes factuels et juridiques.
+
+FORMULATION DES REQUÊTES (CRITIQUE pour le retrieval):
+La requête doit être SPÉCIFIQUE pour retrouver le bon document parmi des milliers. Elle DOIT inclure des termes distinctifs:
+- Noms propres: nom de la partie (M. Mukhtar A.), nom de loi (loi sur le foncier public)
+- Références: numéro de QPC (2016-561/562), numéro d'article (article 696-11)
+- Dates: année ou date précise (9 septembre 2016)
+- Notions clés: termes juridiques spécifiques (écrou extraditionnel, garde à vue, liberté individuelle)
+
+MAUVAISES requêtes (trop génériques, retournent des milliers de résultats):
+- "Quel article a été déclaré conforme ?"
+- "QPC liberté individuelle"
+- "décision Conseil constitutionnel"
+
+BONNES requêtes (spécifiques, permettent de retrouver LE document):
+- "QPC 2016-561 Mukhtar écrou extraditionnel liberté individuelle septembre 2016"
+- "article 696-11 code procédure pénale extradition garanties représentation"
+- "loi foncier public articles déclarés conformes Constitution"
+
+Combine plusieurs termes distinctifs pour maximiser la précision du retrieval.
+
 Périmètre: toute question mentionnant le Conseil constitutionnel, une QPC, la Constitution ou un article 61/61-1 est automatiquement considérée dans le périmètre. Ne renvoie jamais le message hors périmètre dans ces cas.
 Hors périmètre: uniquement pour les sujets manifestement sans lien (ex. agriculture, technique, autres branches du droit). Dans ce seul cas, n'appelle aucun outil et répond strictement: "Le domaine demandé n'est pas couvert par cet agent (jurisprudence constitutionnelle française uniquement)."
 Si search_legal_docs renvoie "No results.", indique clairement qu'aucune décision pertinente n'a été trouvée après tes tentatives.
@@ -149,24 +173,64 @@ configured_index = None
 
 # %% [markdown]
 """
-# 3. Chargement de l'Index ColBERT
-
-Cette section télécharge et prépare l'index de recherche pré-construit.
-
-**L'index contient** :
-- Les embeddings ColBERT des décisions du Conseil constitutionnel
-- La structure `fast_plaid_index` pour une recherche rapide
-
-**Temps estimé** : ~2-3 minutes pour le premier téléchargement (~500 Mo)
+# 2.1 Validation et Préparation
 """
+
+# %% {"tags": ["hide_code", "hide-input"], "hide_input": true}
+from pathlib import Path
+
+import httpx
+from legal_rag.assets import extract_zip, fetch_zip
+from rich import print as rprint
+
+
+def download_index(uri: str, path: Path, name: str) -> None:
+    """Download and extract the index if not present."""
+    root = path.expanduser() / name
+    if root.exists():
+        return
+    path.mkdir(parents=True, exist_ok=True)
+    zip_path = path.parent / "_idx.zip"
+    try:
+        extract_zip(fetch_zip(uri, zip_path), path)
+    finally:
+        zip_path.unlink(missing_ok=True)
+
+
+def validate_index(path: Path, name: str) -> Path:
+    """Validate PLAID index structure."""
+    root = path / name
+    fast_plaid = root / "fast_plaid_index"
+    if not root.exists():
+        raise FileNotFoundError(f"Index missing: {root}")
+    if not fast_plaid.exists() or not (fast_plaid / "metadata.json").exists():
+        raise FileNotFoundError(f"Invalid index: {root}")
+    if not list(fast_plaid.glob("*.codes.npy")):
+        raise FileNotFoundError(f"Incomplete index: {fast_plaid}")
+    return root
+
+
+def validate_llm() -> None:
+    """Validate LLM server connectivity."""
+    if "localhost" in GENERATOR_API_BASE or "127.0.0.1" in GENERATOR_API_BASE:
+        base = GENERATOR_API_BASE.rstrip("/").rsplit("/v1", 1)[0]
+        r = httpx.get(f"{base}/health", timeout=5)
+        if r.status_code != 200:
+            raise ConnectionError(f"LLM unhealthy: {r.status_code}")
+    elif "huggingface" in GENERATOR_API_BASE and not GENERATOR_API_KEY:
+        raise ValueError("HF_API_TOKEN required")
+
+
+download_index(INDEX_URI, Path(INDEX_PATH), INDEX_NAME)
+configured_index = validate_index(Path(INDEX_PATH), INDEX_NAME)
+validate_llm()
+rprint(f"[green]✓[/] Index: {configured_index.name}, LLM: {GENERATOR_MODEL_ID}")
 
 # %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
 import os
-from pathlib import Path
 from typing import Iterable
 
 from etils import ecolab
-from rich import print as rprint
 
 ecolab.auto_display()
 ecolab.auto_inspect()
@@ -174,73 +238,6 @@ ecolab.auto_inspect()
 # Avoid optional vision deps when loading text models.
 os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
 os.environ.setdefault("DISABLE_TRANSFORMERS_AV", "1")
-from legal_rag.assets import extract_zip, fetch_zip
-
-
-def find_existing_index_root(base: Path) -> Path | None:
-    """Return the index root if a fast_plaid_index layout exists under base.
-
-    This avoids re-downloading an index when the destination already holds
-    a valid index structure. The index root is resolved as the parent directory
-    above the fast_plaid_index folder, matching prepare_index expectations.
-    """
-
-    if not base.exists():
-        return None
-
-    fast_plaid_paths = sorted(
-        base.glob("**/fast_plaid_index"),
-        key=lambda p: len(p.relative_to(base).parts),
-    )
-    if not fast_plaid_paths:
-        return None
-
-    index_root = fast_plaid_paths[0].parent.parent
-    return index_root if index_root.exists() else None
-
-
-# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
-def prepare_index(index_uri: str | Path, index_dest: Path) -> Path:
-    """Fetch and extract the index assets; return the resolved index directory."""
-    index_override = Path(index_uri).expanduser()
-    index_dest = index_dest.expanduser()
-
-    # Reuse an existing local index if present (either override or destination).
-    existing_root = find_existing_index_root(
-        index_override if index_override.is_dir() else index_dest
-    )
-    if existing_root:
-        return existing_root
-
-    # Download and extract when no valid index is found locally.
-    index_dest.mkdir(parents=True, exist_ok=True)
-    idx_zip_path = index_dest.parent / "_idx.zip"
-    index_zip = fetch_zip(str(index_uri), idx_zip_path)
-    try:
-        extract_zip(index_zip, index_dest)
-    finally:
-        idx_zip_path.unlink(missing_ok=True)
-
-    index_root = find_existing_index_root(index_dest)
-    if not index_root:
-        raise ValueError(
-            f"Invalid index layout at {index_dest}. Expected a fast_plaid_index directory under this folder."
-        )
-    return index_root
-
-
-# %% {"tags": ["hide_code"]}
-# Run asset prep early so downstream cells only depend on local paths.
-index_source = Path(INDEX_URI).expanduser()
-configured_index = prepare_index(index_uri=INDEX_URI, index_dest=Path(INDEX_PATH))
-print(f"✓ Encoder will be loaded from Hugging Face repo {ENCODER_MODEL_ID}")
-print(f"✓ Index path resolved to {configured_index}")
-if index_source.is_dir():
-    print(f"✓ Using local index at {configured_index}")
-else:
-    print(f"✓ Index ready at {configured_index}")
-
-# Increase HF download timeout to reduce transient failures when fetching models.
 os.environ.setdefault("HF_HUB_TIMEOUT", "60")
 
 # %% [markdown]
@@ -260,7 +257,7 @@ L'agent utilise un workflow en deux étapes :
 5. **Reformulation** : Si aucun résultat pertinent, nouvelle requête (max 3 tentatives)
 """
 
-# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
+# %% {"tags": ["hide_code", "hide-input"], "hide_input": true}
 from legal_rag.agent import build_agent
 
 generator_api_key = GENERATOR_API_KEY or None
@@ -274,11 +271,13 @@ agent = build_agent(
     encoder_model=ENCODER_MODEL_ID,
     generator_api_key=generator_api_key,
     generator_api_base=generator_api_base,
-    index_folder=configured_index,  # used by ColBERT retriever in agent.py
+    index_folder=configured_index.parent,  # PLAID expects the parent folder
+    index_name=configured_index.name,  # Index name is the folder containing fast_plaid_index
     search_k=SEARCH_K,
     temperature=TEMPERATURE,
     instructions=INSTRUCTIONS,
     max_iters=MAX_ITERS,
+    dataset_config=DATASET_CONFIG,
 )
 
 # %% [markdown]
@@ -304,12 +303,12 @@ Une question précise sur une décision du Conseil constitutionnel.
 5. **Réponse** : L'agent génère une réponse structurée citant la décision et sa date
 """
 
-# %% {"tags": ["hide_code", "hide-input"], "jupyter": {"source_hidden": true}, "hide_input": true}
+# %% {"tags": ["hide_code", "hide-input"], "hide_input": true}
 queries: Iterable[str] | str = [
     # Question hors périmètre - l'agent doit refuser poliment
     "Comment régler l'arrosage goutte-à-goutte de tomates en serre pendant une canicule ?",
     # Question dans le périmètre - l'agent doit rechercher et répondre
-    "Que dit le Conseil constitutionnel, dans sa décision du 9 septembre 2016 sur M. Mukhtar A. (QPC 2016-561/562), au sujet des garanties de représentation à vérifier avant l'écrou extraditionnel et du contrôle de la durée raisonnable de cette détention ?",
+    "Quelle requête M. Eric RAOULT a-t-il présentée au Conseil constitutionnel",
 ]
 
 # %% [markdown]
@@ -329,3 +328,5 @@ for idx, question in enumerate(queries, start=1):
     rprint(f"[bold green]Réponse[/]\n{prediction.answer}")
     rprint("[bold magenta]Trajectoire[/]")
     ecolab.json(prediction.trajectory)
+
+# %%

@@ -1,6 +1,5 @@
 """DSPy-based ReAct agent wiring for the Legal RAG demo (new dspy API)."""
 
-from functools import partial
 from pathlib import Path
 
 import dspy
@@ -11,9 +10,9 @@ from legal_rag.chunking import DocumentChunkCache
 from legal_rag.retriever import build_encoder, build_retriever
 from legal_rag.tools import (
     DEFAULT_DOC_ID_COLUMN,
-    lookup_chunk,
-    lookup_legal_doc,
-    search_legal_docs,
+    lookup_chunk as _lookup_chunk,
+    lookup_legal_doc as _lookup_legal_doc,
+    search_legal_docs as _search_legal_docs,
 )
 
 # Defaults aligned with the design doc; adjust via function arguments as needed.
@@ -188,17 +187,28 @@ class LegalReActAgent(dspy.Module):
         return prediction
 
 
-def _resolve_index_dir(base: epath.Path | str) -> epath.Path:
-    """Return the index root (parent of the folder that contains fast_plaid_index)."""
-    base_path = Path(str(base)).expanduser().resolve()
-    fast_paths = sorted(
-        (p for p in base_path.glob("**/fast_plaid_index") if p.is_dir()),
-        key=lambda p: len(p.relative_to(base_path).parts),
-    )
-    if not fast_paths:
-        raise FileNotFoundError(f"No fast_plaid_index found under {base_path}")
-    fast_dir = fast_paths[0]
-    return epath.Path(fast_dir.parent.parent)
+def _validate_index(index_folder: epath.Path | str, index_name: str) -> None:
+    """Validate that a PLAID index exists at the expected location.
+
+    Args:
+        index_folder: Parent directory containing the index.
+        index_name: Name of the index folder (contains fast_plaid_index/).
+
+    Raises:
+        FileNotFoundError: If the index structure is invalid or missing.
+    """
+    index_path = Path(str(index_folder)).expanduser().resolve() / index_name
+    fast_plaid_path = index_path / "fast_plaid_index"
+    metadata_path = fast_plaid_path / "metadata.json"
+
+    if not index_path.exists():
+        raise FileNotFoundError(f"Index folder not found: {index_path}")
+    if not fast_plaid_path.exists():
+        raise FileNotFoundError(f"fast_plaid_index not found in: {index_path}")
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"Invalid PLAID index (missing metadata.json): {fast_plaid_path}"
+        )
 
 
 def build_agent(
@@ -216,6 +226,7 @@ def build_agent(
     temperature: float = DEFAULT_TEMPERATURE,
     instructions: str = DEFAULT_INSTRUCTIONS,
     max_iters: int = 6,
+    dataset_config: str = DEFAULT_CONFIG,
 ) -> LegalReActAgent:
     """Factory that wires LM, retrieval, and ReAct agent.
 
@@ -234,12 +245,12 @@ def build_agent(
     dspy.configure(lm=lm)
 
     encoder = build_encoder(encoder_model=encoder_model)
-    resolved_index_folder = _resolve_index_dir(index_folder)
+    _validate_index(index_folder, index_name)
     retriever = build_retriever(
-        index_folder=resolved_index_folder,
+        index_folder=index_folder,
         index_name=index_name,
     )
-    dataset = load_dataset(DEFAULT_DATASET, DEFAULT_CONFIG, split=DEFAULT_SPLIT)
+    dataset = load_dataset(DEFAULT_DATASET, dataset_config, split=DEFAULT_SPLIT)
 
     # Create chunk cache for efficient runtime chunking
     chunk_cache = DocumentChunkCache(
@@ -247,37 +258,60 @@ def build_agent(
         doc_id_column=DEFAULT_DOC_ID_COLUMN,
     )
 
-    # Search tool: returns 100 chunks with previews
-    search_tool = partial(
-        search_legal_docs,
-        encoder=encoder,
-        retriever=retriever,
-        k=search_k,
-        chunk_cache=chunk_cache,
-    )
-    search_tool.__name__ = "search_legal_docs"
+    # Create tool wrappers with clean signatures for DSPy introspection.
+    # Using closures instead of functools.partial preserves proper function signatures.
+    def search_legal_docs(query: str) -> str:
+        """Search for legal documents and return chunk IDs with scores and previews.
 
-    # Chunk lookup tool: returns specific chunk with context
-    lookup_chunk_tool = partial(
-        lookup_chunk,
-        chunk_cache=chunk_cache,
-        include_context=True,
-        context_chunks=1,
-    )
-    lookup_chunk_tool.__name__ = "lookup_chunk"
+        Args:
+            query: The search query string describing what legal content to find.
 
-    # Document lookup tool: returns full document
-    lookup_doc_tool = partial(
-        lookup_legal_doc,
-        chunk_cache=chunk_cache,
-        doc_id_column=DEFAULT_DOC_ID_COLUMN,
-    )
-    lookup_doc_tool.__name__ = "lookup_legal_doc"
+        Returns:
+            Formatted search results with chunk IDs, scores, and content previews.
+        """
+        return _search_legal_docs(
+            query=query,
+            encoder=encoder,
+            retriever=retriever,
+            k=search_k,
+            chunk_cache=chunk_cache,
+        )
+
+    def lookup_chunk(chunk_id: str) -> str:
+        """Retrieve a specific chunk with surrounding context.
+
+        Args:
+            chunk_id: The chunk ID in format "docid-chunkidx" (e.g., "JURITEXT000007022836-0").
+
+        Returns:
+            The chunk text with surrounding context for detailed analysis.
+        """
+        return _lookup_chunk(
+            chunk_id=chunk_id,
+            chunk_cache=chunk_cache,
+            include_context=True,
+            context_chunks=1,
+        )
+
+    def lookup_legal_doc(chunk_id: str) -> str:
+        """Retrieve the full document text from a chunk ID.
+
+        Args:
+            chunk_id: The chunk ID in format "docid-chunkidx" (e.g., "JURITEXT000007022836-0").
+
+        Returns:
+            Complete document text with metadata for final answer formulation.
+        """
+        return _lookup_legal_doc(
+            chunk_id=chunk_id,
+            chunk_cache=chunk_cache,
+            doc_id_column=DEFAULT_DOC_ID_COLUMN,
+        )
 
     return LegalReActAgent(
-        search_tool,
-        lookup_chunk_tool,
-        lookup_doc_tool,
+        search_legal_docs,
+        lookup_chunk,
+        lookup_legal_doc,
         max_iters=max_iters,
         instructions=instructions,
     )
