@@ -12,12 +12,31 @@ DEFAULT_INDEX_NAME = "legal_french_index"
 
 def build_encoder(
     encoder_model: str = DEFAULT_ENCODER_MODEL,
+    query_prefix: str | None = None,
+    document_prefix: str | None = None,
+    attend_to_expansion_tokens: bool | None = None,
+    trust_remote_code: bool = False,
 ) -> models.ColBERT:
-    """Load ColBERT using PyLate's native loading (same as indexer)."""
+    """Load ColBERT using PyLate's native loading (same as indexer).
+
+    Args:
+        encoder_model: HuggingFace model name or path.
+        query_prefix: Prefix for queries (e.g., "[QueryMarker]" for Jina ColBERT v2).
+        document_prefix: Prefix for documents (e.g., "[DocumentMarker]" for Jina ColBERT v2).
+        attend_to_expansion_tokens: Whether to attend to expansion tokens (True for Jina).
+        trust_remote_code: Whether to trust remote code (required for Jina ColBERT v2).
+
+    Returns:
+        Configured ColBERT encoder.
+    """
     print(f"[legal_rag] Loading encoder from {encoder_model}")
     encoder = models.ColBERT(
         model_name_or_path=encoder_model,
         document_length=496,
+        query_prefix=query_prefix,
+        document_prefix=document_prefix,
+        attend_to_expansion_tokens=attend_to_expansion_tokens,
+        trust_remote_code=trust_remote_code,
     )
     return fix_colbert_embeddings(encoder)
 

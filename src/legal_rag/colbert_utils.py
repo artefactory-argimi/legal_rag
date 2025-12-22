@@ -9,10 +9,18 @@ def fix_colbert_embeddings(model):
 
     The bug: PyLate adds special tokens ([Q], [D]) but doesn't always
     properly resize the embedding layer, causing token IDs to be out of bounds.
+
+    Some models (e.g., Jina ColBERT v2) use custom architectures that don't
+    support get_input_embeddings. These models handle their own token
+    embeddings and don't need this fix.
     """
     # Get current sizes
     vocab_size = len(model.tokenizer)
-    embedding_layer = model[0].auto_model.get_input_embeddings()
+    try:
+        embedding_layer = model[0].auto_model.get_input_embeddings()
+    except NotImplementedError:
+        print("✓ Model uses custom embeddings, skipping embedding fix")
+        return model
     embedding_size = embedding_layer.num_embeddings
 
     # Get special token IDs

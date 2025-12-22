@@ -1,12 +1,12 @@
-# Legal RAG Index Pipeline - ColBERTv2.0-mmarcoFR
+# Legal RAG Index Pipeline - Jina ColBERT v2
 #
-# This pipeline builds the PLAID index for ColBERTv2.0-mmarcoFR.
+# This pipeline builds the PLAID index for Jina ColBERT v2.
 #
 # Usage:
-#   task-tracker submit pipelines/colbertv2_mmarco_fr_index.yaml
+#   task-tracker submit pipelines/jina_colbert_v2_index.yaml
 
-name: colbertv2_mmarco_fr_index
-description: Build PLAID index with ColBERTv2.0-mmarcoFR
+name: jina_colbert_v2_index
+description: Build PLAID index with Jina ColBERT v2
 version: "2.0"
 
 project: legal-rag
@@ -21,10 +21,14 @@ defaults:
   split: train
 
   # Model configuration
-  encoder_model: AdrienB134/ColBERTv2.0-mmarcoFR
+  encoder_model: jinaai/jina-colbert-v2
+  query_prefix: "[QueryMarker]"
+  document_prefix: "[DocumentMarker]"
+  attend_to_expansion_tokens: true
+  trust_remote_code: true
 
   # Index configuration
-  index_name: colbertv2_mmarco_fr_${subset}_index
+  index_name: jina_colbert_v2_${subset}_index
   batch_size: 1024
   accumulation_size: 32768  # 32 * 1024
   pool_factor: 1  # 1 = no pooling, higher = more compression
@@ -38,7 +42,7 @@ defaults:
   # Paths
   index_dir: ${base_dir}/legal-rag/index
   questions_dir: ${base_dir}/legal-rag/questions/${subset}
-  output_dir: ${base_dir}/legal-rag/evaluation/colbertv2_mmarco_fr
+  output_dir: ${base_dir}/legal-rag/evaluation/jina_colbert_v2
 
 steps:
   - command: "python scripts/indexer.py"
@@ -52,6 +56,10 @@ steps:
       pool_factor: ${pool_factor}
       index_folder: "${index_dir}"
       index_name: "${index_name}"
+      query_prefix: "${query_prefix}"
+      document_prefix: "${document_prefix}"
+      attend_to_expansion_tokens: ${attend_to_expansion_tokens}
+      trust_remote_code: ${trust_remote_code}
     gpu_count: 1
     artifacts:
       inputs:
@@ -69,6 +77,10 @@ steps:
       path: "${index_dir}"
       index.name: "${index_name}"
       encoder: "${encoder_model}"
+      query_prefix: "${query_prefix}"
+      document_prefix: "${document_prefix}"
+      attend_to_expansion_tokens: ${attend_to_expansion_tokens}
+      trust_remote_code: ${trust_remote_code}
       source.name: "${dataset}"
       subset: "${subset}"
       split: "${split}"

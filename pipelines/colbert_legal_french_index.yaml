@@ -29,8 +29,16 @@ defaults:
   accumulation_size: 32768  # 32 * 1024
   pool_factor: 1  # 1 = no pooling, higher = more compression
 
+  # Query configuration
+  doc_id_column: id
+  title_column: title
+  k: 100
+  query_batch_size: 32
+
   # Paths
   index_dir: ${base_dir}/legal-rag/index
+  questions_dir: ${base_dir}/legal-rag/questions/${subset}
+  output_dir: ${base_dir}/legal-rag/evaluation/colbert_legal_french
 
 steps:
   - command: "python scripts/indexer.py"
@@ -51,4 +59,32 @@ steps:
           type: Dataset
       outputs:
         - path: "${index_dir}/${index_name}"
+          type: Dataset
+
+  # Step 1: Batch query the index to generate run.txt and qrels.txt
+  - command: "python scripts/batch_query.py"
+    arguments:
+      questions: "${questions_dir}"
+      output: "${output_dir}"
+      path: "${index_dir}"
+      index.name: "${index_name}"
+      encoder: "${encoder_model}"
+      source.name: "${dataset}"
+      subset: "${subset}"
+      split: "${split}"
+      doc_id_column: "${doc_id_column}"
+      title_column: "${title_column}"
+      k: ${k}
+      batch_size: ${query_batch_size}
+    gpu_count: 1
+    artifacts:
+      inputs:
+        - path: "${index_dir}/${index_name}"
+          type: Dataset
+        - path: "${questions_dir}"
+          type: Dataset
+      outputs:
+        - path: "${output_dir}/run.txt"
+          type: Dataset
+        - path: "${output_dir}/qrels.txt"
           type: Dataset

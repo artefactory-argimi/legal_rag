@@ -46,6 +46,11 @@ class IndexConfig:
     path: epath.Path = epath.Path("./index")
     name: str = "legal_french_index"
     encoder: str = "maastrichtlawtech/colbert-legal-french"
+    # ColBERT model configuration (for Jina ColBERT v2 and similar)
+    query_prefix: str | None = None  # e.g., "[QueryMarker]" for Jina ColBERT v2
+    document_prefix: str | None = None  # e.g., "[DocumentMarker]" for Jina ColBERT v2
+    attend_to_expansion_tokens: bool | None = None  # True for Jina ColBERT v2
+    trust_remote_code: bool = False  # required for models with custom code (e.g., Jina)
 
 
 @dataclass(frozen=True)
@@ -108,7 +113,13 @@ def run_batch_query(cfg: QueryConfig) -> None:
     logging.info("Built title/content mapping for %d documents", len(doc_id_to_title))
 
     logging.info("Building encoder from %s", cfg.index.encoder)
-    encoder = build_encoder(cfg.index.encoder)
+    encoder = build_encoder(
+        cfg.index.encoder,
+        query_prefix=cfg.index.query_prefix,
+        document_prefix=cfg.index.document_prefix,
+        attend_to_expansion_tokens=cfg.index.attend_to_expansion_tokens,
+        trust_remote_code=cfg.index.trust_remote_code,
+    )
 
     logging.info("Building retriever from %s", cfg.index.path)
     retriever = build_retriever(cfg.index.path, cfg.index.name)

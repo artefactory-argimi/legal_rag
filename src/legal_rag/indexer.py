@@ -57,6 +57,11 @@ class ScriptConfig:
     chunk_tokenizer: str = "minishlab/potion-base-32M"
     # Force re-indexing even if output already exists (default: skip if exists)
     force: bool = False
+    # ColBERT model configuration
+    query_prefix: str | None = None  # e.g., "[QueryMarker]" for Jina ColBERT v2
+    document_prefix: str | None = None  # e.g., "[DocumentMarker]" for Jina ColBERT v2
+    attend_to_expansion_tokens: bool | None = None  # True for Jina ColBERT v2
+    trust_remote_code: bool = False  # required for models with custom code (e.g., Jina)
 
 
 def preprocess(sample, doc_id_column: str = DEFAULT_DOC_ID_COLUMN):
@@ -102,10 +107,20 @@ def build_index(cfg: ScriptConfig):
     logging.info("  force: %s", cfg.force)
 
     index_path = epath.Path(cfg.index_folder) / cfg.index_name
+    fast_plaid_path = index_path / "fast_plaid_index"
     if index_path.exists() and not cfg.force:
-        raise FileExistsError(
-            f"Index already exists at {index_path}. Use --force to rebuild."
-        )
+        # Check if the fast_plaid_index subdirectory exists (indicates a complete index)
+        if fast_plaid_path.exists():
+            logging.info(
+                "Valid index already exists at %s, skipping indexation", index_path
+            )
+            print(index_path)
+            raise SystemExit(0)
+        else:
+            raise FileExistsError(
+                f"Directory exists at {index_path} but is not a valid index "
+                f"(missing {fast_plaid_path}). Use --force to rebuild."
+            )
 
     logging.info(
         "Building PLAID index: encoder=%s dataset=%s slice=%s output=%s",
@@ -123,6 +138,10 @@ def build_index(cfg: ScriptConfig):
         model_name_or_path=cfg.model,
         document_length=496,  # TODO(hicham): the document length should be configurable
         device=cfg.device,
+        query_prefix=cfg.query_prefix,
+        document_prefix=cfg.document_prefix,
+        attend_to_expansion_tokens=cfg.attend_to_expansion_tokens,
+        trust_remote_code=cfg.trust_remote_code,
     )
     logging.info("Model loaded on device: %s", model.device)
     model = fix_colbert_embeddings(model)
@@ -225,8 +244,8 @@ def build_index(cfg: ScriptConfig):
     # Process remaining documents.
     total += encode_and_index_batch(batch_ids, batch_texts)
 
-    logging.info("Indexing complete (%d chunks), stored at %s", total, cfg.index_folder)
-    print(f"\n✓ Index created successfully at {cfg.index_folder} ({total} documents)")
+    logging.info("Indexing complete (%d chunks), stored at %s", total, index_path)
+    return index_path
 
 
 # Keep the historical entry point name for compatibility.

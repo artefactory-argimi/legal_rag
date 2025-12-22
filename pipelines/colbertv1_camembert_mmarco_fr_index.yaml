@@ -1,12 +1,12 @@
-# Legal RAG Index Pipeline - ColBERTv2.0-mmarcoFR
+# Legal RAG Index Pipeline - ColBERTv1 CamemBERT mmarcoFR
 #
-# This pipeline builds the PLAID index for ColBERTv2.0-mmarcoFR.
+# This pipeline builds the PLAID index for ColBERTv1 CamemBERT mmarcoFR.
 #
 # Usage:
-#   task-tracker submit pipelines/colbertv2_mmarco_fr_index.yaml
+#   task-tracker submit pipelines/colbertv1_camembert_mmarco_fr_index.yaml
 
-name: colbertv2_mmarco_fr_index
-description: Build PLAID index with ColBERTv2.0-mmarcoFR
+name: colbertv1_camembert_mmarco_fr_index
+description: Build PLAID index with ColBERTv1 CamemBERT mmarcoFR
 version: "2.0"
 
 project: legal-rag
@@ -21,10 +21,10 @@ defaults:
   split: train
 
   # Model configuration
-  encoder_model: AdrienB134/ColBERTv2.0-mmarcoFR
+  encoder_model: antoinelouis/colbertv1-camembert-base-mmarcoFR
 
   # Index configuration
-  index_name: colbertv2_mmarco_fr_${subset}_index
+  index_name: colbertv1_camembert_mmarco_fr_${subset}_index
   batch_size: 1024
   accumulation_size: 32768  # 32 * 1024
   pool_factor: 1  # 1 = no pooling, higher = more compression
@@ -38,7 +38,7 @@ defaults:
   # Paths
   index_dir: ${base_dir}/legal-rag/index
   questions_dir: ${base_dir}/legal-rag/questions/${subset}
-  output_dir: ${base_dir}/legal-rag/evaluation/colbertv2_mmarco_fr
+  output_dir: ${base_dir}/legal-rag/evaluation/colbertv1_camembert_mmarco_fr
 
 steps:
   - command: "python scripts/indexer.py"
