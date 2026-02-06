@@ -25,7 +25,7 @@ DEFAULT_MAX_NEW_TOKENS = 512
 DEFAULT_TEMPERATURE = 0.2
 DEFAULT_DATASET = "artefactory/Argimi-Legal-French-Jurisprudence"
 DEFAULT_CONFIG = "juri"
-DEFAULT_SPLIT = "train"
+DEFAULT_SPLIT = "constit"
 
 
 class LegalRAGSignature(dspy.Signature):

@@ -90,7 +90,7 @@ import os
 DEFAULT_TOKEN = os.environ.get("HF_API_TOKEN", "")
 GENERATOR_API_KEY = DEFAULT_TOKEN  # @param {type:"string"}
 GENERATOR_API_BASE = "http://localhost:8000/v1"  # @param ["https://router.huggingface.co/v1", "https://api.openai.com/v1", "http://localhost:8000/v1"]  # noqa: E501
-GENERATOR_MODEL_ID = "mistralai/Magistral-Small-2509"  # @param ["mistralai/Magistral-Small-2509", "Qwen/Qwen3-4B-Thinking-2507", "HuggingFaceTB/SmolLM3-3B"]  # noqa: E501
+GENERATOR_MODEL_ID = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"  # @param ["mistralai/Magistral-Small-2509", "Qwen/Qwen3-4B-Thinking-2507", "HuggingFaceTB/SmolLM3-3B"]  # noqa: E501
 
 # === Paramètres du Retriever (ColBERT) ===
 ENCODER_MODEL_ID = "maastrichtlawtech/colbert-legal-french"  # @param {type:"string"}
